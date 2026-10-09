@@ -1237,6 +1237,76 @@
       "nodes": [
         "5:05-yinong"
       ]
+    },
+    {
+      "id": "g088",
+      "name": "文圃路",
+      "lng": 117.899326,
+      "lat": 24.516799,
+      "lines": [
+        "6号线"
+      ],
+      "avg_minutes": null,
+      "rank": null,
+      "nodes": [
+        "5:05-wenpu-road"
+      ]
+    },
+    {
+      "id": "g089",
+      "name": "角江路",
+      "lng": 117.895407,
+      "lat": 24.501564,
+      "lines": [
+        "6号线"
+      ],
+      "avg_minutes": null,
+      "rank": null,
+      "nodes": [
+        "5:05-jiaojiang-road"
+      ]
+    },
+    {
+      "id": "g090",
+      "name": "角海路",
+      "lng": 117.908805,
+      "lat": 24.520746,
+      "lines": [
+        "6号线"
+      ],
+      "avg_minutes": null,
+      "rank": null,
+      "nodes": [
+        "5:05-jiaohai-road"
+      ]
+    },
+    {
+      "id": "g091",
+      "name": "角美东",
+      "lng": 117.920937,
+      "lat": 24.527225,
+      "lines": [
+        "6号线"
+      ],
+      "avg_minutes": null,
+      "rank": null,
+      "nodes": [
+        "5:05-jiaomei-east"
+      ]
+    },
+    {
+      "id": "g092",
+      "name": "角美中心",
+      "lng": 117.892182,
+      "lat": 24.50933,
+      "lines": [
+        "6号线"
+      ],
+      "avg_minutes": null,
+      "rank": null,
+      "nodes": [
+        "5:05-jiaomei-center"
+      ]
     }
   ]
 }

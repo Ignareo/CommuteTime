@@ -257,16 +257,30 @@ def load_lines(stations_all_path: Path, city: str, nodes: dict[str, dict], group
         label = label_by_order.get(order, order)
         lines.append({"label": label, "color": colors.get(label, DEFAULT_LINE_COLOR), "groups": seq})
 
+    # 两种 schema：上海 root 输出 {line, station_id, station_name}；
+    # 厦门等分城市输出 {line_order, line_label, station_id, station_slug, station_name, source_key}
+    if not stations_all_path.is_file():
+        return [], 0
+    with stations_all_path.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        if "line_order" in fieldnames:
+            col_order, col_name = "line_order", "station_name"
+        elif "line" in fieldnames:
+            col_order, col_name = "line", "station_name"
+        else:
+            return [], 0
+        csv_rows = [(row[col_order].strip(), row[col_name].strip()) for row in reader]
+
     current_order: str | None = None
     current_names: list[str] = []
-    for row in read_rows(stations_all_path, STATIONS_ALL_COLUMNS):
-        order = row["line"].strip()
+    for order, name in csv_rows:
         if current_order is None:
             current_order = order
         elif order != current_order:
             flush(current_order, current_names)
             current_order, current_names = order, []
-        current_names.append(row["station_name"].strip())
+        current_names.append(name)
     if current_order is not None:
         flush(current_order, current_names)
     return lines, missing

@@ -52,6 +52,15 @@
         user-select: none; height: auto; line-height: 1.5; margin: 0;
     }
     .chip.on { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .line-bar-foot {
+        display: flex; align-items: center; gap: 8px;
+        margin-top: 4px; font-size: 11px; color: #9ca3af;
+    }
+    .line-bar-foot .hint { margin: 0; }
+    .line-toggle {
+        margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+        cursor: pointer; color: #6b7280; white-space: nowrap;
+    }
     button.link-btn {
         background: none; border: none; color: #2563eb; font-size: 11px;
         padding: 0 2px; margin: 0; height: auto; cursor: pointer;
@@ -88,6 +97,7 @@
         padding: 8px 10px; font-size: 12px; color: #374151; box-shadow: 0 1px 6px rgba(0,0,0,.12);
     }
     #legend .lg-title { font-weight: 600; margin-bottom: 4px; }
+    #legend .lg-dep { margin-top: 6px; padding-top: 4px; border-top: 1px solid #e5e7eb; color: #6b7280; }
     #legend .lg-item { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
     #legend .lg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
     .mdot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.45); }
@@ -109,7 +119,14 @@
     .modal-box {
         background: #fff; border-radius: 10px; width: 100%; max-width: 420px;
         padding: 20px; box-shadow: 0 10px 40px rgba(0,0,0,.2);
+        position: relative;
     }
+    .modal-close {
+        position: absolute; top: 10px; right: 10px;
+        width: 30px; height: 30px; padding: 0; margin: 0;
+        background: transparent; border: none; color: #6b7280; font-size: 16px;
+    }
+    .modal-close:hover { color: #111827; background: #f3f4f6; border-radius: 6px; }
     .modal-box h3 { font-size: 16px; margin-bottom: 10px; }
     .modal-box p { font-size: 13px; color: #4b5563; line-height: 1.7; margin-bottom: 12px; }
     .modal-box input { margin-bottom: 8px; }
@@ -209,15 +226,15 @@
                         <option value="60">平均：≤60分</option>
                     </select>
                 </div>
-                <div class="hint" style="margin:6px 0 2px">线路筛选（点选开关）：
-                    <button id="lineAllBtn" class="link-btn">全选</button>
-                    <button id="lineNoneBtn" class="link-btn">清空</button>
-                    <span id="lineChipCount"></span>
-                    <label style="float:right;display:inline-flex;align-items:center;gap:4px;cursor:pointer">
+                <div class="chip-row" id="lineChips"></div>
+                <div class="line-bar-foot">
+                    <button id="lineAllBtn" class="link-btn" type="button">全选</button>
+                    <button id="lineNoneBtn" class="link-btn" type="button">清空</button>
+                    <span id="lineChipCount" class="hint"></span>
+                    <label class="line-toggle">
                         <input type="checkbox" id="showLinesChk" checked style="width:auto;height:auto;margin:0"> 地图画线
                     </label>
                 </div>
-                <div class="chip-row" id="lineChips"></div>
                 <div class="hint" id="rankCount"></div>
                 <table class="rank-table">
                     <thead>
@@ -244,7 +261,7 @@
                 <div id="destList"></div>
             </section>
         </div>
-        <div id="panelFooter"><span id="footerText">数据加载后可查看口径声明。</span><button id="rekeyBtn" class="link-btn" type="button">重新配置密钥</button></div>
+        <div id="panelFooter"><span id="footerText"></span><button id="rekeyBtn" class="link-btn" type="button">重新配置密钥</button></div>
     </aside>
     <div id="container">
         <button id="mobileBackBtn">← 返回全城视图</button>
@@ -260,6 +277,7 @@
 
 <div id="keyModal" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
     <div class="modal-box">
+        <button type="button" id="keyModalClose" class="modal-close" title="关闭" aria-label="关闭">✕</button>
         <h3 id="keyModalTitle">欢迎使用地铁可达性工具</h3>
         <p>本工具使用高德地图服务，需要你在本地配置高德 JS API Key 与安全密钥。密钥仅保存在浏览器 localStorage 中，不会上传到任何服务器。</p>
         <p class="hint">如果你还没有密钥，可前往 <a href="https://console.amap.com" target="_blank">console.amap.com</a> 免费申请：应用管理 → 创建 Key → 服务平台选「Web端(JS API)」。</p>
@@ -359,6 +377,10 @@ document.getElementById('modalSaveBtn').onclick = function () {
 };
 
 document.getElementById('modalSkipBtn').onclick = function () { hideKeyModal(); };
+document.getElementById('keyModalClose').onclick = hideKeyModal;
+document.getElementById('keyModal').addEventListener('mousedown', function (e) {
+    if (e.target === this) hideKeyModal();
+});
 document.getElementById('goConfigBtn').onclick = showKeyModal;
 document.getElementById('rekeyBtn').onclick = showKeyModal;   // 页脚兜底入口，弹窗不回显已有密钥
 /* 面板 grabber：点击循环三档（默认→expanded→collapsed→默认）；触摸拖拽实时调高、松手吸附 */
@@ -760,12 +782,8 @@ function selectCity(city) {
 }
 
 function renderFooter() {
-    var el = document.getElementById('footerText');
-    if (!meta) { el.textContent = '数据加载后可查看口径声明。'; return; }
-    var dep = meta.departure ? ('出发口径：' + meta.departure + '。') : '';
-    var gen = meta.generated_at ? ('生成时间：' + meta.generated_at + '。') : '';
-    el.textContent = dep + gen +
-        '数据为静态快照：工作日早高峰出发，含进出站步行与候车；与实时查询有差异。单站视图的等值圈为凸包外扩的近似范围。数据由 shmetro-accessibility 项目本地计算生成。';
+    // 口径说明已移至地图图例（出发口径）与数据文档，页脚仅保留密钥入口
+    document.getElementById('footerText').textContent = '';
 }
 
 function loadRows(gid) {
@@ -819,6 +837,10 @@ function renderLegend(title, items) {
     items.forEach(function (it) {
         html += '<div class="lg-item"><span class="lg-dot" style="background:' + escapeHtml(it[0]) + '"></span>' + escapeHtml(it[1]) + '</div>';
     });
+    // 出发口径挂在「全市平均通勤时间」图例下方，与分档口径对照
+    if (title.indexOf('全市平均') === 0 && meta && meta.departure) {
+        html += '<div class="lg-dep">出发口径：' + escapeHtml(meta.departure) + '</div>';
+    }
     box.innerHTML = html;
     box.style.display = 'block';
 }
@@ -1045,7 +1067,7 @@ function renderRankTable() {
         (!base ? '无匹配站点，请调整筛选条件' :
         (!list.length ? '无匹配站点，请调整搜索关键词' :
         ('共 ' + base + (base !== groups.length ? ' / ' + groups.length : '') + ' 站' +
-            (list.length !== base ? ('，匹配 ' + list.length + ' 站') : '') + '，单击行定位，› 看单站视图')));
+            (list.length !== base ? ('，匹配 ' + list.length + ' 站') : ''))));
     // collapsed 抽屉摘要：「N 站 · 平均 M 分钟」
     var sum = 0, cnt = 0;
     vis.forEach(function (g) { if (g.avg_minutes != null) { sum += g.avg_minutes; cnt++; } });

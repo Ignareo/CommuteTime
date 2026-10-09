@@ -15,9 +15,9 @@
 - 密钥加载逻辑（localStorage → `config.yaml` → 弹窗兜底）在两个页面间保持一致的写法；密钥**不在页面展示**——无常驻设置面板、不回显，入口只有无密钥/失效时的弹窗与页脚「重新配置密钥」链接。`metro.html` 无密钥时可跳过弹窗纯数据浏览（地图区显示占位层，排行榜/单站列表可用），有密钥才初始化高德地图。
 - 近似圈配速是开发者配置：`config.yaml` 的 `walk_speed`/`ride_speed`（页面无输入框），方案包仍携带速度以保证几何缓存签名命中；Mapbox Token 同样只能写在 `config.yaml`。
 - 提交信息用中文、带 `feat:`/`fix:` 等前缀，正文列要点。
-- 配色约定：通勤时间分档绿/黄/橙/红（index.html：≤30/45/60 分钟，为等时圈设定时长；metro.html 全城视图：≤40/50/60 全市平均通勤，单站视图：≤15/30/45/60 从该站出发）。两页阈值含义不同，靠图例/文案标注口径而非统一数值。黄/橙档徽标用深色文字（对比度）；metro 单站等值圈为凸包外扩近似，页脚口径声明需保留该说明。
+- 配色约定：通勤时间分档绿/黄/橙/红（index.html：≤30/45/60 分钟，为等时圈设定时长；metro.html 全城视图：≤40/50/60 全市平均通勤，单站视图：≤15/30/45/60 从该站出发）。两页阈值含义不同，靠图例/文案标注口径而非统一数值。黄/橙档徽标用深色文字（对比度）；metro 单站等值圈为凸包外扩近似，该口径随单站图例/数据文档说明（页脚不放口径文案，仅保留密钥入口）；出发口径文本渲染在「全市平均通勤时间」图例下方，取自 meta.json 的 departure 字段。
 - 反馈组件分层：瞬时结果用 `#toast`（顶部居中，metro.html 中 z-index 1100 高于密钥弹窗）；进行中的任务（检索/导入/批量）一律用 `#progBar` 进度浮条（含取消按钮），不要用长显 toast 当进度条。index.html 中三者互斥，状态统一入口是 `updateActionStates()`。
-- 破坏性操作（删起点级联删圈、删圈、清空候选）必须先 `confirm`；前置条件不满足的按钮用 disabled + title 提示，toast 校验只作兜底。
+- 破坏性操作（删起点级联删圈、清空候选）必须先 `confirm`；删等时圈按产品要求不二次确认；前置条件不满足的按钮用 disabled + title 提示，toast 校验只作兜底。
 
 ## 数据管线（metro.html 的数据从哪来）
 
@@ -31,7 +31,7 @@
 
 - 站点按**站名分组**（同站不同线的节点合并），组 id 为 `g001…`；`stations.json` 含每组坐标（GCJ-02）、线路、avg_minutes、rank。
 - `rows/<组id>.json` = `{"t": {目的组id: 分钟整数}}`，按需 fetch，不含自身。
-- `lines.json`（可选，旧城市数据可能没有）= `{"lines": [{label, color, groups: [组id 按线路顺序]}]}`，由 `stations_all.csv` 行序生成，前端画 Polyline；标志色在脚本的 `CITY_LINE_COLORS` 维护，未收录线路用灰。前端必须容忍 404（按无线处理）。
+- `lines.json`（可选，旧城市数据可能没有）= `{"lines": [{label, color, groups: [组id 按线路顺序]}]}`，由 `stations_all.csv` 行序生成，前端画 Polyline；标志色在脚本的 `CITY_LINE_COLORS` 维护，未收录线路用灰。前端必须容忍 404（按无线处理）。`stations_all.csv` 有两种 schema：上海 root 输出 `{line, station_id, station_name}`，厦门等分城市输出 `{line_order, line_label, station_id, station_slug, station_name, source_key}`，脚本按列名自动识别（关联仍按 `(line_order, 站名)`）。
 - 节点唯一键是 `{line_order}:{station_id}`（station_id 跨线路会复用，不能单独用）；`stations_all.csv` 的 station_id 是另一套格式，关联只能按 `(line, 站名)`。
 
 已知坑：

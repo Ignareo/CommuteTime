@@ -1,16 +1,12 @@
 {
   "city": "xiamen",
   "city_name": "厦门",
-  "generated_at": "2026-10-07",
+  "generated_at": "2026-10-09",
   "departure": "工作日 07:15 出发，含进出站步行与候车",
-  "group_count": 87,
-  "node_count": 97,
+  "group_count": 92,
+  "node_count": 102,
   "pair_count": 7482,
-  "unresolved_nodes": [
-    "5:05-jiaohai-road",
-    "5:05-jiaojiang-road",
-    "5:05-jiaomei-center",
-    "5:05-jiaomei-east",
-    "5:05-wenpu-road"
-  ]
+  "line_count": 5,
+  "line_missing_stations": 0,
+  "unresolved_nodes": []
 }

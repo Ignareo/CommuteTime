@@ -9,7 +9,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
     #app { display: flex; height: 100%; }
-    #container { flex: 1; height: 100%; }
+    #container { flex: 1; height: 100%; position: relative; }
     #panel {
         width: 380px; height: 100%; overflow-y: auto; background: #fff;
         border-right: 1px solid #e5e7eb; padding: 14px 16px; flex-shrink: 0;
@@ -128,7 +128,30 @@
     .modal-box {
         background: #fff; border-radius: 10px; width: 100%; max-width: 420px;
         padding: 20px; box-shadow: 0 10px 40px rgba(0,0,0,.2);
+        position: relative;
     }
+    .modal-close {
+        position: absolute; top: 10px; right: 10px;
+        width: 30px; height: 30px; padding: 0; margin: 0;
+        background: transparent; border: none; color: #6b7280; font-size: 16px;
+    }
+    .modal-close:hover { color: #111827; background: #f3f4f6; border-radius: 6px; }
+    #mapLegend {
+        position: absolute; right: 12px; bottom: 24px; z-index: 10;
+        background: rgba(255,255,255,.92); border: 1px solid #e5e7eb; border-radius: 6px;
+        padding: 5px 10px; font-size: 12px; color: #374151; pointer-events: none;
+        box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    }
+    .info-icon { position: relative; cursor: help; color: #6b7280; font-size: 13px; align-self: center; }
+    .info-icon:hover, .info-icon:focus { color: #2563eb; }
+    .info-tip {
+        display: none; position: absolute; left: 50%; transform: translateX(-50%);
+        top: 22px; width: 240px; z-index: 20;
+        background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.16); padding: 8px 10px;
+        font-size: 12px; color: #374151; line-height: 1.6; white-space: normal; cursor: default;
+    }
+    .info-icon:hover .info-tip, .info-icon.open .info-tip { display: block; }
     .modal-box h3 { font-size: 16px; margin-bottom: 10px; }
     .modal-box p { font-size: 13px; color: #4b5563; line-height: 1.7; margin-bottom: 12px; }
     .modal-box input { margin-bottom: 8px; }
@@ -167,19 +190,17 @@
         </div>
 
         <section>
-            <h2>① 起点位置（可添加任意多个，搜索/点图即新建）</h2>
-            <input type="text" id="companyInput" placeholder="输入地点名 / 地址搜索新建，或直接点击地图新建">
-            <div class="hint">每次搜索选中，或点击地图后确认「设为起点」，都会创建一个新的出发地点。</div>
+            <h2>① 起点位置</h2>
+            <input type="text" id="companyInput" placeholder="输入地址或点击地图">
             <div id="chipBox"></div>
             <div class="row" style="margin-top:6px">
-                <button id="shareBtn" class="ghost" title="复制链接：保存起点、等时圈设置与交集开关（不含密钥）">🔗 分享</button>
                 <button id="exportPkgBtn" class="ghost" title="导出方案包文件：包含全部起点、等时圈与圈几何，纯文本可分享（不含密钥与候选点）">⬇ 导出方案包</button>
                 <button id="importPkgBtn" class="ghost" title="粘贴或选择方案包文件，追加导入起点与等时圈（重复自动跳过）">⬆ 导入方案包</button>
             </div>
         </section>
 
         <section>
-            <h2>② 添加等时圈（可叠加多个）</h2>
+            <h2>② 添加等时圈</h2>
             <div class="row">
                 <select id="circleCompany" style="flex:0 0 90px">
                 </select>
@@ -201,8 +222,10 @@
                 <label style="flex:0 0 auto;font-size:12px;color:#374151;display:flex;align-items:center;gap:4px;white-space:nowrap">
                     <input type="checkbox" id="preciseChk" style="width:auto;height:auto;margin:0"> 精确路网圈（步行/骑行）
                 </label>
+                <span class="info-icon" id="preciseInfo" tabindex="0" title="精确路网圈说明">ⓘ
+                    <span class="info-tip">精确圈沿真实路径逐方向二分边界（约 200 次调用、30~60 秒，更准）；不勾选按默认配速画直线近似圈，秒出。</span>
+                </span>
             </div>
-            <div class="hint">精确圈沿真实路径逐方向二分边界（约 200 次调用、30~60 秒，更准）；不勾选按 config.yaml 配速画直线近似圈，秒出。</div>
             <div id="circleList"></div>
             <details style="margin-top:8px">
                 <summary>高级：批量改时长 · 交集差集 · 导出</summary>
@@ -251,6 +274,7 @@
                 </select>
             </div>
             <div class="row">
+                <button id="shareBtn" class="ghost" title="复制链接：保存起点、等时圈设置与交集开关（不含密钥、圈几何与候选点）">🔗 分享</button>
                 <button id="csvBtn" class="ghost">导出结果 CSV</button>
                 <span class="hint" id="poiCount" style="margin:0"></span>
             </div>
@@ -258,11 +282,12 @@
         </section>
 
         <footer>
-            说明：步行/骑行不勾选「精确路网圈」时按 config.yaml 配速画直线近似圈，勾选后用真实路径逐方向二分（慢但准）；<b>驾车/骑行/步行(Mapbox)</b>调用 Mapbox 等时圈接口（需在 config.yaml 配置 Token，上限 60 分钟）；地铁/公交圈来自高德到达圈（不含等车与换乘耗时），以「真实通勤时间」为最终依据。配色：候选点按真实通勤时间 ≤30分钟 绿，≤45 黄，≤60 橙，&gt;60 红；等时圈边界按设定时长绘制，两者口径不同。<br>
             <a href="#" id="rekeyLink" style="color:#9ca3af">重新配置密钥</a>
         </footer>
     </aside>
-    <div id="container"></div>
+    <div id="container">
+        <div id="mapLegend">配色：候选点按真实通勤 ≤30分钟 绿 · ≤45 黄 · ≤60 橙 · &gt;60 红</div>
+    </div>
 </div>
 <div id="toast" aria-live="polite"></div>
 <div id="progBar">
@@ -273,6 +298,7 @@
 
 <div id="keyModal" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
     <div class="modal-box">
+        <button type="button" id="keyModalClose" class="modal-close" title="关闭" aria-label="关闭">✕</button>
         <h3 id="keyModalTitle">欢迎使用等时圈通勤工具</h3>
         <p>本工具使用高德地图服务，需要你在本地配置高德 JS API Key 与安全密钥。密钥仅保存在浏览器 localStorage 中，不会上传到任何服务器。</p>
         <p class="hint">如果你还没有密钥，可前往 <a href="https://console.amap.com" target="_blank">console.amap.com</a> 免费申请：应用管理 → 创建 Key → 服务平台选「Web端(JS API)」。</p>
@@ -395,6 +421,25 @@ document.getElementById('modalSaveBtn').onclick = function () {
     var c = document.getElementById('modalCode').value.trim();
     if (saveKeys(k, c)) hideKeyModal();
 };
+
+/* 关闭按钮 + 点击外部空白区域关闭 */
+document.getElementById('keyModalClose').onclick = hideKeyModal;
+document.getElementById('keyModal').addEventListener('mousedown', function (e) {
+    if (e.target === this) hideKeyModal();
+});
+
+/* 精确路网圈说明图标：悬停显示；移动端点击切换，点别处收起 */
+(function () {
+    var icon = document.getElementById('preciseInfo');
+    if (!icon) return;
+    icon.addEventListener('click', function (e) {
+        e.stopPropagation();
+        icon.classList.toggle('open');
+    });
+    document.addEventListener('click', function (e) {
+        if (!icon.contains(e.target)) icon.classList.remove('open');
+    });
+})();
 
 /* 配速来自 config.yaml（开发者配置，页面无入口）；缺省/越界保持默认值 */
 function applySpeedConfig(walkVal, rideVal) {
@@ -735,6 +780,12 @@ function shareLink() {
     qs.set('run', '1');
     qs.set('mode', document.getElementById('mode').value);
     qs.set('min', document.getElementById('minutes').value);
+    // 等时圈：按 起点序号,模式,分钟[,精确] 重复编码，打开链接逐圈重现
+    circles.forEach(function (c) {
+        var idx = list.findIndex(function (x) { return x.id === c.companyId; });
+        if (idx < 0) return;
+        qs.append('circle', idx + ',' + c.mode + ',' + c.minutes + (c.precise ? ',1' : ''));
+    });
     if (intersectOnly && list.length >= 2) qs.set('intersect', '1');
     var url = location.href.split('?')[0] + '?' + qs.toString();
     copyText(url, function (ok) {
@@ -765,9 +816,29 @@ function applyDeepLink() {
         document.getElementById('mode').value = mode;
         document.getElementById('minutes').value = minutes;
         renderMinChips();
-        added.forEach(function (comp, i) {
-            setTimeout(function () { addCircleFrom(comp.id, mode, minutes, true); }, 700 * (i + 1));
-        });
+        // 分享链接携带的逐圈设置优先于统一 mode/min
+        var circleParams = qs.getAll('circle').map(function (s) {
+            var p = String(s).split(',');
+            var ci = parseInt(p[0], 10), m = parseInt(p[2], 10);
+            if (!isFinite(ci) || !isFinite(m) || m < 1 || !added[ci]) return null;
+            var md = p[1] || mode;
+            if (!MODE_LABEL[md]) md = mode;
+            return { company: added[ci], mode: md, minutes: m, precise: p[3] === '1' };
+        }).filter(Boolean);
+        if (circleParams.length) {
+            if (circleParams.some(function (x) { return x.precise; })) {
+                document.getElementById('preciseChk').checked = true;
+            }
+            circleParams.forEach(function (x, i) {
+                setTimeout(function () {
+                    addCircleFrom(x.company.id, x.mode, x.minutes, true, x.precise ? { precise: true } : undefined);
+                }, 700 * (i + 1));
+            });
+        } else {
+            added.forEach(function (comp, i) {
+                setTimeout(function () { addCircleFrom(comp.id, mode, minutes, true); }, 700 * (i + 1));
+            });
+        }
         if (qs.get('intersect') === '1' && added.length >= 2) {
             var tries = 0;
             var iv = setInterval(function () {
@@ -1526,7 +1597,6 @@ function renderCircleList() {
         delBtn.textContent = '删';
         delBtn.setAttribute('aria-label', '删除等时圈 ' + c.label);
         delBtn.onclick = function () {
-            if (!confirm('删除等时圈「' + c.label + '」？')) return;
             removeCircle(c.id);
             saveState();
         };
@@ -2155,9 +2225,10 @@ function importCandidates() {
         if (ctrl.aborted) return;
         if (i >= lines.length) { finishImport(false); return; }
         var line = lines[i++];
-        var parts = line.split(/[,，]/);
+        var parts = line.split(/[,，]/).map(function (s) { return s.trim(); });
         var kw = parts[0];
-        var city = (parts[1] || '').trim() || cityName || '全国';
+        if (!kw) { next(); return; }
+        var city = parts[1] || cityName || '全国';
         // '全国'不是真实城市，只能做不限定搜索；只有明确城市名才 citylimit
         amapRequest('地点检索', {
             run: function (cb) {
@@ -2751,7 +2822,11 @@ function applyState(state, merge) {
 
 function restoreState() {
     var raw = localStorage.getItem('house_tool_state');
-    if (!raw) { renderCompanySelects(); renderChips(); return; }
+    if (!raw) {
+        // 默认起点：东方明珠广播电视塔
+        addCompany(new AMap.LngLat(121.4997, 31.2397), '东方明珠广播电视塔', true);
+        renderCompanySelects(); renderChips(); return;
+    }
     try {
         var state = JSON.parse(raw);
         var circlesN = (state.circles || []).length;
