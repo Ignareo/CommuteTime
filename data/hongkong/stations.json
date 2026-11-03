@@ -1,0 +1,1408 @@
+{
+  "groups": [
+    {
+      "id": "g001",
+      "name": "红磡",
+      "lng": 114.186698,
+      "lat": 22.300117,
+      "lines": [
+        "东铁线",
+        "屯马线"
+      ],
+      "avg_minutes": 22.2,
+      "rank": 1,
+      "nodes": [
+        "7:07-hung-hom",
+        "8:08-hung-hom"
+      ]
+    },
+    {
+      "id": "g002",
+      "name": "太子",
+      "lng": 114.173219,
+      "lat": 22.321937,
+      "lines": [
+        "观塘线",
+        "荃湾线"
+      ],
+      "avg_minutes": 22.3,
+      "rank": 3,
+      "nodes": [
+        "2:02-prince-edward",
+        "3:03-prince-edward"
+      ]
+    },
+    {
+      "id": "g003",
+      "name": "旺角",
+      "lng": 114.17432,
+      "lat": 22.316633,
+      "lines": [
+        "观塘线",
+        "荃湾线"
+      ],
+      "avg_minutes": 22.4,
+      "rank": 5,
+      "nodes": [
+        "2:02-mong-kok",
+        "3:03-mong-kok"
+      ]
+    },
+    {
+      "id": "g004",
+      "name": "油麻地",
+      "lng": 114.175658,
+      "lat": 22.310264,
+      "lines": [
+        "观塘线",
+        "荃湾线"
+      ],
+      "avg_minutes": 22.9,
+      "rank": 7,
+      "nodes": [
+        "2:02-yau-ma-tei",
+        "3:03-yau-ma-tei"
+      ]
+    },
+    {
+      "id": "g005",
+      "name": "何文田",
+      "lng": 114.18754,
+      "lat": 22.306542,
+      "lines": [
+        "观塘线",
+        "屯马线"
+      ],
+      "avg_minutes": 23.5,
+      "rank": 9,
+      "nodes": [
+        "2:02-ho-man-tin",
+        "8:08-ho-man-tin"
+      ]
+    },
+    {
+      "id": "g006",
+      "name": "金钟",
+      "lng": 114.170298,
+      "lat": 22.276502,
+      "lines": [
+        "港岛线",
+        "荃湾线",
+        "东铁线",
+        "南港岛线"
+      ],
+      "avg_minutes": 23.6,
+      "rank": 11,
+      "nodes": [
+        "1:01-admiralty",
+        "3:03-admiralty",
+        "7:07-admiralty",
+        "9:09-admiralty"
+      ]
+    },
+    {
+      "id": "g007",
+      "name": "尖东",
+      "lng": 114.179848,
+      "lat": 22.292689,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 23.8,
+      "rank": 15,
+      "nodes": [
+        "8:08-east-tsim-sha-tsui"
+      ]
+    },
+    {
+      "id": "g008",
+      "name": "佐敦",
+      "lng": 114.176627,
+      "lat": 22.302123,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 24.0,
+      "rank": 16,
+      "nodes": [
+        "3:03-jordan"
+      ]
+    },
+    {
+      "id": "g009",
+      "name": "九龙塘",
+      "lng": 114.18082,
+      "lat": 22.334207,
+      "lines": [
+        "观塘线",
+        "东铁线"
+      ],
+      "avg_minutes": 24.0,
+      "rank": 17,
+      "nodes": [
+        "2:02-kowloon-tong",
+        "7:07-kowloon-tong"
+      ]
+    },
+    {
+      "id": "g010",
+      "name": "深水埗",
+      "lng": 114.167342,
+      "lat": 22.328073,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 24.6,
+      "rank": 19,
+      "nodes": [
+        "3:03-sham-shui-po"
+      ]
+    },
+    {
+      "id": "g011",
+      "name": "长沙湾",
+      "lng": 114.161326,
+      "lat": 22.332675,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 24.9,
+      "rank": 20,
+      "nodes": [
+        "3:03-cheung-sha-wan"
+      ]
+    },
+    {
+      "id": "g012",
+      "name": "钻石山",
+      "lng": 114.206299,
+      "lat": 22.337335,
+      "lines": [
+        "观塘线",
+        "屯马线"
+      ],
+      "avg_minutes": 25.0,
+      "rank": 21,
+      "nodes": [
+        "2:02-diamond-hill",
+        "8:08-diamond-hill"
+      ]
+    },
+    {
+      "id": "g013",
+      "name": "石硖尾",
+      "lng": 114.17369,
+      "lat": 22.329145,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 25.0,
+      "rank": 23,
+      "nodes": [
+        "2:02-shek-kip-mei"
+      ]
+    },
+    {
+      "id": "g014",
+      "name": "尖沙咀",
+      "lng": 114.17719,
+      "lat": 22.294678,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 25.0,
+      "rank": 24,
+      "nodes": [
+        "3:03-tsim-sha-tsui"
+      ]
+    },
+    {
+      "id": "g015",
+      "name": "土瓜湾",
+      "lng": 114.192503,
+      "lat": 22.314323,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 25.2,
+      "rank": 25,
+      "nodes": [
+        "8:08-to-kwa-wan"
+      ]
+    },
+    {
+      "id": "g016",
+      "name": "美孚",
+      "lng": 114.144073,
+      "lat": 22.33514,
+      "lines": [
+        "荃湾线",
+        "屯马线"
+      ],
+      "avg_minutes": 25.3,
+      "rank": 26,
+      "nodes": [
+        "3:03-mei-foo",
+        "8:08-mei-foo"
+      ]
+    },
+    {
+      "id": "g017",
+      "name": "中环",
+      "lng": 114.164061,
+      "lat": 22.278969,
+      "lines": [
+        "港岛线",
+        "荃湾线"
+      ],
+      "avg_minutes": 25.3,
+      "rank": 28,
+      "nodes": [
+        "1:01-central",
+        "3:03-central"
+      ]
+    },
+    {
+      "id": "g018",
+      "name": "宋皇台",
+      "lng": 114.196136,
+      "lat": 22.323003,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 25.7,
+      "rank": 30,
+      "nodes": [
+        "8:08-sung-wong-toi"
+      ]
+    },
+    {
+      "id": "g019",
+      "name": "荔枝角",
+      "lng": 114.153234,
+      "lat": 22.334655,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 25.8,
+      "rank": 31,
+      "nodes": [
+        "3:03-lai-chi-kok"
+      ]
+    },
+    {
+      "id": "g020",
+      "name": "柯士甸",
+      "lng": 114.171487,
+      "lat": 22.301724,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 25.8,
+      "rank": 32,
+      "nodes": [
+        "8:08-austin"
+      ]
+    },
+    {
+      "id": "g021",
+      "name": "乐富",
+      "lng": 114.19218,
+      "lat": 22.335052,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 26.0,
+      "rank": 33,
+      "nodes": [
+        "2:02-lok-fu"
+      ]
+    },
+    {
+      "id": "g022",
+      "name": "启德",
+      "lng": 114.204299,
+      "lat": 22.327686,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 26.1,
+      "rank": 34,
+      "nodes": [
+        "8:08-kai-tak"
+      ]
+    },
+    {
+      "id": "g023",
+      "name": "旺角东",
+      "lng": 114.177552,
+      "lat": 22.319406,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 26.3,
+      "rank": 35,
+      "nodes": [
+        "7:07-mong-kok-east"
+      ]
+    },
+    {
+      "id": "g024",
+      "name": "会展",
+      "lng": 114.180418,
+      "lat": 22.278893,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 26.3,
+      "rank": 36,
+      "nodes": [
+        "7:07-exhibition-centre"
+      ]
+    },
+    {
+      "id": "g025",
+      "name": "黄大仙",
+      "lng": 114.198946,
+      "lat": 22.338902,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 26.6,
+      "rank": 37,
+      "nodes": [
+        "2:02-wong-tai-sin"
+      ]
+    },
+    {
+      "id": "g026",
+      "name": "南昌",
+      "lng": 114.158537,
+      "lat": 22.323914,
+      "lines": [
+        "东涌线",
+        "屯马线"
+      ],
+      "avg_minutes": 27.1,
+      "rank": 38,
+      "nodes": [
+        "5:05-nam-cheong",
+        "8:08-nam-cheong"
+      ]
+    },
+    {
+      "id": "g027",
+      "name": "彩虹",
+      "lng": 114.213797,
+      "lat": 22.331958,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 27.4,
+      "rank": 40,
+      "nodes": [
+        "2:02-choi-hung"
+      ]
+    },
+    {
+      "id": "g028",
+      "name": "湾仔",
+      "lng": 114.177904,
+      "lat": 22.274386,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 27.5,
+      "rank": 41,
+      "nodes": [
+        "1:01-wan-chai"
+      ]
+    },
+    {
+      "id": "g029",
+      "name": "黄埔",
+      "lng": 114.194403,
+      "lat": 22.302342,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 27.6,
+      "rank": 42,
+      "nodes": [
+        "2:02-whampoa"
+      ]
+    },
+    {
+      "id": "g030",
+      "name": "荔景",
+      "lng": 114.131105,
+      "lat": 22.34597,
+      "lines": [
+        "荃湾线",
+        "东涌线"
+      ],
+      "avg_minutes": 27.7,
+      "rank": 43,
+      "nodes": [
+        "3:03-lai-king",
+        "5:05-lai-king"
+      ]
+    },
+    {
+      "id": "g031",
+      "name": "铜锣湾",
+      "lng": 114.188547,
+      "lat": 22.277493,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 28.4,
+      "rank": 45,
+      "nodes": [
+        "1:01-causeway-bay"
+      ]
+    },
+    {
+      "id": "g032",
+      "name": "九龙湾",
+      "lng": 114.218878,
+      "lat": 22.320799,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 28.7,
+      "rank": 46,
+      "nodes": [
+        "2:02-kowloon-bay"
+      ]
+    },
+    {
+      "id": "g033",
+      "name": "大围",
+      "lng": 114.183441,
+      "lat": 22.370133,
+      "lines": [
+        "东铁线",
+        "屯马线"
+      ],
+      "avg_minutes": 29.0,
+      "rank": 47,
+      "nodes": [
+        "7:07-tai-wai",
+        "8:08-tai-wai"
+      ]
+    },
+    {
+      "id": "g034",
+      "name": "观塘",
+      "lng": 114.231268,
+      "lat": 22.30943,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 29.1,
+      "rank": 49,
+      "nodes": [
+        "2:02-kwun-tong"
+      ]
+    },
+    {
+      "id": "g035",
+      "name": "香港",
+      "lng": 114.163262,
+      "lat": 22.281863,
+      "lines": [
+        "东涌线",
+        "机场快线"
+      ],
+      "avg_minutes": 29.1,
+      "rank": 50,
+      "nodes": [
+        "5:05-hong-kong",
+        "10:10-hong-kong"
+      ]
+    },
+    {
+      "id": "g036",
+      "name": "牛头角",
+      "lng": 114.223841,
+      "lat": 22.312658,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 29.3,
+      "rank": 52,
+      "nodes": [
+        "2:02-ngau-tau-kok"
+      ]
+    },
+    {
+      "id": "g037",
+      "name": "上环",
+      "lng": 114.157738,
+      "lat": 22.283657,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 29.6,
+      "rank": 53,
+      "nodes": [
+        "1:01-sheung-wan"
+      ]
+    },
+    {
+      "id": "g038",
+      "name": "蓝田",
+      "lng": 114.237856,
+      "lat": 22.303776,
+      "lines": [
+        "观塘线"
+      ],
+      "avg_minutes": 29.7,
+      "rank": 54,
+      "nodes": [
+        "2:02-lam-tin"
+      ]
+    },
+    {
+      "id": "g039",
+      "name": "天后",
+      "lng": 114.196768,
+      "lat": 22.279984,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 29.9,
+      "rank": 55,
+      "nodes": [
+        "1:01-tin-hau"
+      ]
+    },
+    {
+      "id": "g040",
+      "name": "葵芳",
+      "lng": 114.132928,
+      "lat": 22.35419,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 30.0,
+      "rank": 56,
+      "nodes": [
+        "3:03-kwai-fong"
+      ]
+    },
+    {
+      "id": "g041",
+      "name": "奥运",
+      "lng": 114.165218,
+      "lat": 22.315076,
+      "lines": [
+        "东涌线"
+      ],
+      "avg_minutes": 30.1,
+      "rank": 57,
+      "nodes": [
+        "5:05-olympic"
+      ]
+    },
+    {
+      "id": "g042",
+      "name": "显径",
+      "lng": 114.17576,
+      "lat": 22.361349,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 30.4,
+      "rank": 58,
+      "nodes": [
+        "8:08-hin-keng"
+      ]
+    },
+    {
+      "id": "g043",
+      "name": "北角",
+      "lng": 114.205467,
+      "lat": 22.288219,
+      "lines": [
+        "港岛线",
+        "将军澳线"
+      ],
+      "avg_minutes": 30.4,
+      "rank": 59,
+      "nodes": [
+        "1:01-north-point",
+        "4:04-north-point"
+      ]
+    },
+    {
+      "id": "g044",
+      "name": "炮台山",
+      "lng": 114.198948,
+      "lat": 22.285688,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 30.4,
+      "rank": 61,
+      "nodes": [
+        "1:01-fortress-hill"
+      ]
+    },
+    {
+      "id": "g045",
+      "name": "鲗鱼涌",
+      "lng": 114.21468,
+      "lat": 22.284993,
+      "lines": [
+        "港岛线",
+        "将军澳线"
+      ],
+      "avg_minutes": 30.9,
+      "rank": 62,
+      "nodes": [
+        "1:01-quarry-bay",
+        "4:04-quarry-bay"
+      ]
+    },
+    {
+      "id": "g046",
+      "name": "油塘",
+      "lng": 114.241935,
+      "lat": 22.295066,
+      "lines": [
+        "观塘线",
+        "将军澳线"
+      ],
+      "avg_minutes": 30.9,
+      "rank": 64,
+      "nodes": [
+        "2:02-yau-tong",
+        "4:04-yau-tong"
+      ]
+    },
+    {
+      "id": "g047",
+      "name": "葵兴",
+      "lng": 114.136267,
+      "lat": 22.360587,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 31.1,
+      "rank": 66,
+      "nodes": [
+        "3:03-kwai-hing"
+      ]
+    },
+    {
+      "id": "g048",
+      "name": "九龙",
+      "lng": 114.166578,
+      "lat": 22.302336,
+      "lines": [
+        "东涌线",
+        "机场快线"
+      ],
+      "avg_minutes": 31.4,
+      "rank": 67,
+      "nodes": [
+        "5:05-kowloon",
+        "10:10-kowloon"
+      ]
+    },
+    {
+      "id": "g049",
+      "name": "西营盘",
+      "lng": 114.147572,
+      "lat": 22.282666,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 31.9,
+      "rank": 69,
+      "nodes": [
+        "1:01-sai-ying-pun"
+      ]
+    },
+    {
+      "id": "g050",
+      "name": "车公庙",
+      "lng": 114.191357,
+      "lat": 22.371998,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 32.2,
+      "rank": 70,
+      "nodes": [
+        "8:08-che-kung-temple"
+      ]
+    },
+    {
+      "id": "g051",
+      "name": "沙田",
+      "lng": 114.192389,
+      "lat": 22.379834,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 32.4,
+      "rank": 71,
+      "nodes": [
+        "7:07-sha-tin"
+      ]
+    },
+    {
+      "id": "g052",
+      "name": "荃湾",
+      "lng": 114.122827,
+      "lat": 22.370957,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 32.8,
+      "rank": 72,
+      "nodes": [
+        "3:03-tsuen-wan"
+      ]
+    },
+    {
+      "id": "g053",
+      "name": "大窝口",
+      "lng": 114.130001,
+      "lat": 22.368253,
+      "lines": [
+        "荃湾线"
+      ],
+      "avg_minutes": 32.9,
+      "rank": 73,
+      "nodes": [
+        "3:03-tai-wo-hau"
+      ]
+    },
+    {
+      "id": "g054",
+      "name": "调景岭",
+      "lng": 114.257252,
+      "lat": 22.30139,
+      "lines": [
+        "观塘线",
+        "将军澳线"
+      ],
+      "avg_minutes": 33.0,
+      "rank": 74,
+      "nodes": [
+        "2:02-tiu-keng-leng",
+        "4:04-tiu-keng-leng"
+      ]
+    },
+    {
+      "id": "g055",
+      "name": "香港大学",
+      "lng": 114.140803,
+      "lat": 22.281397,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 33.1,
+      "rank": 76,
+      "nodes": [
+        "1:01-hku"
+      ]
+    },
+    {
+      "id": "g056",
+      "name": "荃湾西",
+      "lng": 114.114957,
+      "lat": 22.36548,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 33.3,
+      "rank": 77,
+      "nodes": [
+        "8:08-tsuen-wan-west"
+      ]
+    },
+    {
+      "id": "g057",
+      "name": "青衣",
+      "lng": 114.112563,
+      "lat": 22.355763,
+      "lines": [
+        "东涌线",
+        "机场快线"
+      ],
+      "avg_minutes": 33.5,
+      "rank": 78,
+      "nodes": [
+        "5:05-tsing-yi",
+        "10:10-tsing-yi"
+      ]
+    },
+    {
+      "id": "g058",
+      "name": "太古",
+      "lng": 114.220993,
+      "lat": 22.281807,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 33.6,
+      "rank": 80,
+      "nodes": [
+        "1:01-tai-koo"
+      ]
+    },
+    {
+      "id": "g059",
+      "name": "坚尼地城",
+      "lng": 114.133869,
+      "lat": 22.278567,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 34.7,
+      "rank": 81,
+      "nodes": [
+        "1:01-kennedy-town"
+      ]
+    },
+    {
+      "id": "g060",
+      "name": "沙田围",
+      "lng": 114.199828,
+      "lat": 22.37423,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 34.9,
+      "rank": 82,
+      "nodes": [
+        "8:08-sha-tin-wai"
+      ]
+    },
+    {
+      "id": "g061",
+      "name": "火炭",
+      "lng": 114.203115,
+      "lat": 22.392434,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 35.1,
+      "rank": 83,
+      "nodes": [
+        "7:07-fo-tan"
+      ]
+    },
+    {
+      "id": "g062",
+      "name": "西湾河",
+      "lng": 114.227223,
+      "lat": 22.279294,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 35.5,
+      "rank": 84,
+      "nodes": [
+        "1:01-sai-wan-ho"
+      ]
+    },
+    {
+      "id": "g063",
+      "name": "海洋公园",
+      "lng": 114.179442,
+      "lat": 22.24599,
+      "lines": [
+        "南港岛线"
+      ],
+      "avg_minutes": 36.3,
+      "rank": 85,
+      "nodes": [
+        "9:09-ocean-park"
+      ]
+    },
+    {
+      "id": "g064",
+      "name": "将军澳",
+      "lng": 114.264721,
+      "lat": 22.304583,
+      "lines": [
+        "将军澳线"
+      ],
+      "avg_minutes": 36.8,
+      "rank": 86,
+      "nodes": [
+        "4:04-tseung-kwan-o"
+      ]
+    },
+    {
+      "id": "g065",
+      "name": "第一城",
+      "lng": 114.208359,
+      "lat": 22.379924,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 37.2,
+      "rank": 87,
+      "nodes": [
+        "8:08-city-one"
+      ]
+    },
+    {
+      "id": "g066",
+      "name": "筲箕湾",
+      "lng": 114.233952,
+      "lat": 22.276312,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 37.4,
+      "rank": 88,
+      "nodes": [
+        "1:01-shau-kei-wan"
+      ]
+    },
+    {
+      "id": "g067",
+      "name": "杏花邨",
+      "lng": 114.244545,
+      "lat": 22.273808,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 38.0,
+      "rank": 89,
+      "nodes": [
+        "1:01-heng-fa-chuen"
+      ]
+    },
+    {
+      "id": "g068",
+      "name": "黄竹坑",
+      "lng": 114.172524,
+      "lat": 22.245189,
+      "lines": [
+        "南港岛线"
+      ],
+      "avg_minutes": 38.2,
+      "rank": 90,
+      "nodes": [
+        "9:09-wong-chuk-hang"
+      ]
+    },
+    {
+      "id": "g069",
+      "name": "大学",
+      "lng": 114.215,
+      "lat": 22.41103,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 38.2,
+      "rank": 91,
+      "nodes": [
+        "7:07-university"
+      ]
+    },
+    {
+      "id": "g070",
+      "name": "坑口",
+      "lng": 114.26918,
+      "lat": 22.312577,
+      "lines": [
+        "将军澳线"
+      ],
+      "avg_minutes": 38.8,
+      "rank": 92,
+      "nodes": [
+        "4:04-hang-hau"
+      ]
+    },
+    {
+      "id": "g071",
+      "name": "锦上路",
+      "lng": 114.068417,
+      "lat": 22.43223,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 38.8,
+      "rank": 93,
+      "nodes": [
+        "8:08-kam-sheung-road"
+      ]
+    },
+    {
+      "id": "g072",
+      "name": "石门",
+      "lng": 114.21331,
+      "lat": 22.384946,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 39.3,
+      "rank": 94,
+      "nodes": [
+        "8:08-shek-mun"
+      ]
+    },
+    {
+      "id": "g073",
+      "name": "欣澳",
+      "lng": 114.033911,
+      "lat": 22.329018,
+      "lines": [
+        "东涌线",
+        "迪士尼线"
+      ],
+      "avg_minutes": 39.6,
+      "rank": 95,
+      "nodes": [
+        "5:05-sunny-bay",
+        "6:06-sunny-bay"
+      ]
+    },
+    {
+      "id": "g074",
+      "name": "利东",
+      "lng": 114.161536,
+      "lat": 22.239958,
+      "lines": [
+        "南港岛线"
+      ],
+      "avg_minutes": 40.1,
+      "rank": 97,
+      "nodes": [
+        "9:09-lei-tung"
+      ]
+    },
+    {
+      "id": "g075",
+      "name": "宝琳",
+      "lng": 114.26259,
+      "lat": 22.319765,
+      "lines": [
+        "将军澳线"
+      ],
+      "avg_minutes": 40.7,
+      "rank": 98,
+      "nodes": [
+        "4:04-po-lam"
+      ]
+    },
+    {
+      "id": "g076",
+      "name": "柴湾",
+      "lng": 114.241982,
+      "lat": 22.261764,
+      "lines": [
+        "港岛线"
+      ],
+      "avg_minutes": 41.1,
+      "rank": 99,
+      "nodes": [
+        "1:01-chai-wan"
+      ]
+    },
+    {
+      "id": "g077",
+      "name": "元朗",
+      "lng": 114.040127,
+      "lat": 22.443359,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 41.1,
+      "rank": 100,
+      "nodes": [
+        "8:08-yuen-long"
+      ]
+    },
+    {
+      "id": "g078",
+      "name": "海怡半岛",
+      "lng": 114.153938,
+      "lat": 22.240033,
+      "lines": [
+        "南港岛线"
+      ],
+      "avg_minutes": 42.1,
+      "rank": 101,
+      "nodes": [
+        "9:09-south-horizons"
+      ]
+    },
+    {
+      "id": "g079",
+      "name": "大水坑",
+      "lng": 114.22765,
+      "lat": 22.405777,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 42.4,
+      "rank": 102,
+      "nodes": [
+        "8:08-tai-shui-hang"
+      ]
+    },
+    {
+      "id": "g080",
+      "name": "大埔墟",
+      "lng": 114.175218,
+      "lat": 22.441916,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 43.5,
+      "rank": 103,
+      "nodes": [
+        "7:07-tai-po-market"
+      ]
+    },
+    {
+      "id": "g081",
+      "name": "朗屏",
+      "lng": 114.030437,
+      "lat": 22.444924,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 43.6,
+      "rank": 104,
+      "nodes": [
+        "8:08-long-ping"
+      ]
+    },
+    {
+      "id": "g082",
+      "name": "恒安",
+      "lng": 114.230795,
+      "lat": 22.415265,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 43.9,
+      "rank": 105,
+      "nodes": [
+        "8:08-heng-on"
+      ]
+    },
+    {
+      "id": "g083",
+      "name": "太和",
+      "lng": 114.166196,
+      "lat": 22.448238,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 45.1,
+      "rank": 106,
+      "nodes": [
+        "7:07-tai-wo"
+      ]
+    },
+    {
+      "id": "g084",
+      "name": "马鞍山",
+      "lng": 114.236628,
+      "lat": 22.42202,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 45.4,
+      "rank": 107,
+      "nodes": [
+        "8:08-ma-on-shan"
+      ]
+    },
+    {
+      "id": "g085",
+      "name": "康城",
+      "lng": 114.273833,
+      "lat": 22.293135,
+      "lines": [
+        "将军澳线"
+      ],
+      "avg_minutes": 45.8,
+      "rank": 108,
+      "nodes": [
+        "4:04-lohas-park"
+      ]
+    },
+    {
+      "id": "g086",
+      "name": "东涌",
+      "lng": 113.946242,
+      "lat": 22.286207,
+      "lines": [
+        "东涌线"
+      ],
+      "avg_minutes": 45.9,
+      "rank": 109,
+      "nodes": [
+        "5:05-tung-chung"
+      ]
+    },
+    {
+      "id": "g087",
+      "name": "天水围",
+      "lng": 114.00971,
+      "lat": 22.445338,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 46.2,
+      "rank": 110,
+      "nodes": [
+        "8:08-tin-shui-wai"
+      ]
+    },
+    {
+      "id": "g088",
+      "name": "乌溪沙",
+      "lng": 114.24859,
+      "lat": 22.42626,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 49.2,
+      "rank": 111,
+      "nodes": [
+        "8:08-wu-kai-sha"
+      ]
+    },
+    {
+      "id": "g089",
+      "name": "机场",
+      "lng": 113.941436,
+      "lat": 22.312952,
+      "lines": [
+        "机场快线"
+      ],
+      "avg_minutes": 49.3,
+      "rank": 112,
+      "nodes": [
+        "10:10-airport"
+      ]
+    },
+    {
+      "id": "g090",
+      "name": "兆康",
+      "lng": 113.983925,
+      "lat": 22.408859,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 50.4,
+      "rank": 113,
+      "nodes": [
+        "8:08-siu-hong"
+      ]
+    },
+    {
+      "id": "g091",
+      "name": "粉岭",
+      "lng": 114.143647,
+      "lat": 22.489469,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 51.1,
+      "rank": 114,
+      "nodes": [
+        "7:07-fanling"
+      ]
+    },
+    {
+      "id": "g092",
+      "name": "上水",
+      "lng": 114.132778,
+      "lat": 22.498862,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 51.9,
+      "rank": 115,
+      "nodes": [
+        "7:07-sheung-shui"
+      ]
+    },
+    {
+      "id": "g093",
+      "name": "迪士尼",
+      "lng": 114.050251,
+      "lat": 22.312738,
+      "lines": [
+        "迪士尼线"
+      ],
+      "avg_minutes": 52.4,
+      "rank": 116,
+      "nodes": [
+        "6:06-disneyland-resort"
+      ]
+    },
+    {
+      "id": "g094",
+      "name": "博览馆",
+      "lng": 113.946832,
+      "lat": 22.318976,
+      "lines": [
+        "机场快线"
+      ],
+      "avg_minutes": 52.4,
+      "rank": 117,
+      "nodes": [
+        "10:10-asiaworld-expo"
+      ]
+    },
+    {
+      "id": "g095",
+      "name": "屯门",
+      "lng": 113.978085,
+      "lat": 22.392364,
+      "lines": [
+        "屯马线"
+      ],
+      "avg_minutes": 52.6,
+      "rank": 118,
+      "nodes": [
+        "8:08-tuen-mun"
+      ]
+    },
+    {
+      "id": "g096",
+      "name": "罗湖",
+      "lng": 114.118331,
+      "lat": 22.526117,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 56.6,
+      "rank": 119,
+      "nodes": [
+        "7:07-lo-wu"
+      ]
+    },
+    {
+      "id": "g097",
+      "name": "落马洲",
+      "lng": 114.070889,
+      "lat": 22.511861,
+      "lines": [
+        "东铁线"
+      ],
+      "avg_minutes": 57.5,
+      "rank": 120,
+      "nodes": [
+        "7:07-lok-ma-chau"
+      ]
+    }
+  ]
+}

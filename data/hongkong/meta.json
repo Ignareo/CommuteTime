@@ -1,0 +1,12 @@
+{
+  "city": "hongkong",
+  "city_name": "香港",
+  "generated_at": "2026-11-03",
+  "departure": "工作日 07:15 出发，含进出站步行与候车",
+  "group_count": 97,
+  "node_count": 120,
+  "pair_count": 9312,
+  "line_count": 10,
+  "line_missing_stations": 0,
+  "unresolved_nodes": []
+}

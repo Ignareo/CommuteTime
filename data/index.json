@@ -1,6 +1,11 @@
 {
   "cities": [
     {
+      "city": "hongkong",
+      "city_name": "香港",
+      "group_count": 97
+    },
+    {
       "city": "shanghai",
       "city_name": "上海",
       "group_count": 416
