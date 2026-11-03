@@ -17,6 +17,7 @@
 - 提交信息用中文、带 `feat:`/`fix:` 等前缀，正文列要点。
 - 配色约定：通勤时间分档绿/黄/橙/红（index.html：≤30/45/60 分钟，为等时圈设定时长；metro.html 全城视图：≤40/50/60 全市平均通勤，单站视图：≤15/30/45/60 从该站出发）。两页阈值含义不同，靠图例/文案标注口径而非统一数值。黄/橙档徽标用深色文字（对比度）；metro 单站等值圈为凸包外扩近似，该口径随单站图例/数据文档说明（页脚不放口径文案，仅保留密钥入口）；出发口径文本渲染在「全市平均通勤时间」图例下方，取自 meta.json 的 departure 字段。
 - 反馈组件分层：瞬时结果用 `#toast`（顶部居中，metro.html 中 z-index 1100 高于密钥弹窗）；进行中的任务（检索/导入/批量）一律用 `#progBar` 进度浮条（含取消按钮），不要用长显 toast 当进度条。index.html 中三者互斥，状态统一入口是 `updateActionStates()`。
+- 附近车站线路（index.html ②）：PlaceSearch 取公交站(150700)/地铁站(150500)，站点 `address` 即途经线路名列表，`AMap.LineSearch`（extensions all）按线路名取 `path` 折线与 `via_stops` 沿途站点（零额外请求）；步行时间与线路走向分别缓存在 `house_tool_station_walk_cache` / `house_tool_station_line_cache_v2`；单次最多 24 个候选站、50 条线路，新增逻辑别把上限放开到配额失控。线路高亮用独立白色 halo Polyline（`hoveredStationLine` / `selectedStationLine`），不要改主折线颜色；详情窗用 `stationInfoWindow`（`autoMove:false`）并在点击位置打开，避免挪动地图；悬停名称用 `#mapTip` 固定定位小浮层，不走 InfoWindow。
 - 破坏性操作（删起点级联删圈、清空候选）必须先 `confirm`；删等时圈按产品要求不二次确认；前置条件不满足的按钮用 disabled + title 提示，toast 校验只作兜底。
 
 ## 数据管线（metro.html 的数据从哪来）

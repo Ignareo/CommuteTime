@@ -69,10 +69,33 @@
         margin: 2px 3px 0 0; color: #fff;
     }
     .src-tag { font-size: 11px; color: #7c3aed; border: 1px solid #ddd6fe; border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+    .st-dot {
+        width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+        font-size: 12px; line-height: 1; background: #fff; border: 2px solid #0891b2;
+        box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    }
+    .st-dot.metro { border-color: #dc2626; }
+    .station-row .meta { font-size: 12px; color: #6b7280; margin-top: 2px; }
+    .line-list { max-height: 190px; overflow-y: auto; margin-top: 4px; }
+    .line-item {
+        display: flex; align-items: center; gap: 6px; font-size: 12px;
+        padding: 3px 4px; border-radius: 4px; cursor: pointer; line-height: 1.5;
+    }
+    .line-item:hover { background: #f3f4f6; }
+    .line-item.active { background: #e0f2fe; }
+    .line-item .dot { width: 10px; height: 10px; border-radius: 2px; }
+    .line-item .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #toast {
         position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
         background: rgba(17,24,39,.9); color: #fff; padding: 8px 18px; border-radius: 6px;
         font-size: 13px; z-index: 999; display: none; max-width: 80%;
+    }
+    #mapTip {
+        position: fixed; z-index: 998; display: none; pointer-events: none;
+        background: rgba(17,24,39,.92); color: #fff; font-size: 12px; line-height: 1.4;
+        padding: 4px 8px; border-radius: 4px; max-width: 240px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        box-shadow: 0 2px 8px rgba(0,0,0,.25);
     }
     details summary { font-size: 12px; color: #6b7280; cursor: pointer; }
     footer { font-size: 11px; color: #9ca3af; line-height: 1.7; padding-top: 10px; }
@@ -185,7 +208,7 @@
         <div id="panelSummary" aria-live="polite"></div>
         <h1>⏱️ 等时圈通勤工具 <a class="h1-link" href="metro.html" title="查看各城市地铁站可达性排行">→ 地铁可达性</a></h1>
         <div id="guideBar">
-            <span>使用步骤：<b>① 设起点</b>（搜索或点图新建）→ <b>② 画等时圈</b>（可选精确路网圈）→ <b>③ 检索候选地点并批量算通勤</b></span>
+            <span>使用步骤：<b>① 设起点</b>（搜索或点图新建）→ <b>② 查附近车站线路</b>（可选）→ <b>③ 画等时圈</b>（可选精确路网圈）→ <b>④ 检索候选地点并批量算通勤</b></span>
             <button type="button" class="x" id="guideClose" title="关闭，不再显示" aria-label="关闭引导">✕</button>
         </div>
 
@@ -201,7 +224,34 @@
         </section>
 
         <section>
-            <h2>② 添加等时圈</h2>
+            <h2>② 附近车站线路</h2>
+            <div class="row" style="flex-wrap:wrap">
+                <select id="stationCompany" style="flex:0 0 100px" title="选择要分析的起点"></select>
+                <label class="hint" style="flex:0 0 auto">步行 ≤</label>
+                <input type="number" id="stationWalkMin" min="1" max="30" value="10" style="flex:0 0 60px">
+                <label class="hint" style="flex:0 0 auto">分钟</label>
+                <button id="stationSearchBtn" title="按真实步行路径找出起点可达的公交站与地铁站，并画出途经线路">查附近车站</button>
+            </div>
+            <div id="stationWalkChips"></div>
+            <div class="row" style="margin-top:4px;flex-wrap:wrap">
+                <label class="hint" style="flex:0 0 auto;display:flex;align-items:center;gap:4px;white-space:nowrap">
+                    <input type="checkbox" id="stationBusChk" checked style="width:auto;height:auto;margin:0"> 公交
+                </label>
+                <label class="hint" style="flex:0 0 auto;display:flex;align-items:center;gap:4px;white-space:nowrap">
+                    <input type="checkbox" id="stationMetroChk" checked style="width:auto;height:auto;margin:0"> 地铁
+                </label>
+                <label class="hint" style="flex:0 0 auto;display:flex;align-items:center;gap:4px;white-space:nowrap">
+                    <input type="checkbox" id="stationStopChk" checked style="width:auto;height:auto;margin:0"> 途经站
+                </label>
+                <button id="stationFitBtn" class="ghost" style="margin-left:auto" title="把视野缩放至全部线路范围">全览线路</button>
+                <button id="clearStationsBtn" class="ghost" title="移除地图上的车站与线路">清空</button>
+            </div>
+            <div id="stationList"><div class="hint" style="padding:6px 2px">查询起点步行可达的公交站/地铁站，并画出途经这些站的全部线路与线路沿途站点。按真实步行路径计时，会消耗高德配额。</div></div>
+            <div class="hint">线路走向与沿途站点均来自高德「公交线路查询」；同一线路只画一个方向，地铁优先采用官方线路色。鼠标悬停或点击线路可高亮，点击沿途站点可看经过线路。</div>
+        </section>
+
+        <section>
+            <h2>③ 添加等时圈（数据较旧）</h2>
             <div class="row">
                 <select id="circleCompany" style="flex:0 0 90px">
                 </select>
@@ -255,7 +305,7 @@
         </section>
 
         <section>
-            <h2>③ 候选地点</h2>
+            <h2>④ 候选地点</h2>
             <div class="row">
                 <button id="searchPoiBtn" title="在已勾选的等时圈范围内检索住宅类地点">通勤圈内检索</button>
                 <button id="importBtn" class="ghost" title="按名单逐个关键词定位，不受等时圈限制">任意地点检索</button>
@@ -281,7 +331,7 @@
                 <button id="csvBtn" class="ghost">导出结果 CSV</button>
                 <span class="hint" id="poiCount" style="margin:0"></span>
             </div>
-            <div id="poiList"><div class="hint" style="padding:8px 2px">暂无候选地点：先在 ① 设置起点、② 画等时圈，再点「通勤圈内检索」，或在下方文本框粘贴名单点「任意地点检索」。</div></div>
+            <div id="poiList"><div class="hint" style="padding:8px 2px">暂无候选地点：先在 ① 设置起点、③ 画等时圈，再点「通勤圈内检索」，或在下方文本框粘贴名单点「任意地点检索」。</div></div>
         </section>
 
         <footer>
@@ -293,6 +343,7 @@
     </div>
 </div>
 <div id="toast" aria-live="polite"></div>
+<div id="mapTip" aria-hidden="true"></div>
 <div id="progBar">
     <span class="txt"></span>
     <span class="track"><span class="fill"></span></span>
@@ -957,7 +1008,7 @@ function loadAMap() {
     _s.onload = function () {
         AMap.plugin([
             'AMap.ArrivalRange', 'AMap.PlaceSearch', 'AMap.AutoComplete',
-            'AMap.Transfer', 'AMap.Walking', 'AMap.Riding', 'AMap.Geocoder'
+            'AMap.Transfer', 'AMap.Walking', 'AMap.Riding', 'AMap.Geocoder', 'AMap.LineSearch'
         ], initApp);
     };
     _s.onerror = function () { toast('高德 JSAPI 加载失败，请检查 Key 与安全密钥', 5000); };
@@ -984,6 +1035,17 @@ var diffOnly = false;
 var diffOverlays = [];
 var diffGeomA = null;  // 圈A有、B无（A色显示）
 var diffGeomB = null;  // 圈B有、A无（B色显示）
+/* 附近车站线路状态：结果含 markers/polylines，仅内存，随查询或起点删除清空 */
+var stationRunning = false;
+var stationCtrl = null;
+var stationResult = null;
+var stationFilter = { bus: true, metro: true, stops: true };
+var hoveredStationLine = null;
+var selectedStationLine = null;
+var stationInfoWindow = null;   // 车站功能专用：autoMove=false，打开时不挪地图
+var mapTipEl = null;
+var mapTipW = 0, mapTipH = 0;
+var mapTipTarget = null;
 
 /* 前置条件禁用态与移动端抽屉摘要：候选数/圈数/起点数变化时统一刷新 */
 var batchRunning = false;
@@ -1018,7 +1080,7 @@ function updateActionStates() {
     var count = Object.keys(communities).length;
     // 检索/批量与圈构建互斥：共享 #progBar，且新增圈完成时会清空 POI 候选。
     // 但普通圈可以连续添加（互不共享进度条），只有精确圈需要独占按钮。
-    var taskBusy = searchRunning || batchRunning;
+    var taskBusy = searchRunning || batchRunning || stationRunning;
     var anyBusy = taskBusy || circlePending > 0;
     var busyHint = '有任务正在进行，请稍候';
     var addBtn = document.getElementById('addCircleBtn');
@@ -1038,6 +1100,18 @@ function updateActionStates() {
     var hasCompanies = companyList().length > 0;
     clearBtn.disabled = !hasCompanies || anyBusy;
     clearBtn.title = !hasCompanies ? '暂无起点' : (anyBusy ? busyHint : '删除全部起点及其等时圈');
+    // 附近车站：与其它任务共享进度条，运行期间互斥
+    var stBtn = document.getElementById('stationSearchBtn');
+    var stSel = document.getElementById('stationCompany');
+    stBtn.disabled = !hasCompanies || anyBusy;
+    stBtn.title = !hasCompanies ? '请先添加起点' : (anyBusy ? busyHint : '按真实步行路径找出起点可达的公交站与地铁站，并画出途经线路');
+    stSel.disabled = !hasCompanies || anyBusy;
+    var stFit = document.getElementById('stationFitBtn');
+    stFit.disabled = !stationResult || anyBusy;
+    stFit.title = !stationResult ? '请先查询附近车站' : (anyBusy ? busyHint : '把视野缩放至全部线路范围');
+    var stClear = document.getElementById('clearStationsBtn');
+    stClear.disabled = !stationResult || anyBusy;
+    stClear.title = !stationResult ? '暂无车站线路' : (anyBusy ? busyHint : '移除地图上的车站与线路');
     updatePanelSummary();
 }
 updateActionStates();
@@ -1071,6 +1145,8 @@ function closeOriginConfirm() {
     if (originConfirm.iw) originConfirm.iw.close();
 }
 function promptAddOrigin(lnglat) {
+    clearSelectedStationLine();
+    mapTipHide();
     closeOriginConfirm();
     var box = document.createElement('div');
     box.style.cssText = 'font-size:13px;padding:2px 4px';
@@ -1114,6 +1190,8 @@ function initApp() {
     map.on('click', function (e) {
         promptAddOrigin(e.lnglat);
     });
+    map.on('movestart', mapTipHide);
+    map.on('zoomstart', mapTipHide);
 
     var autoComplete = new AMap.AutoComplete({ input: 'companyInput' });
     autoComplete.on('select', function (e) {
@@ -1165,6 +1243,22 @@ function initApp() {
     document.getElementById('sortBy').onchange = renderPoiList;
 
     document.getElementById('shareBtn').onclick = shareLink;
+    document.getElementById('stationSearchBtn').onclick = searchNearbyStations;
+    document.getElementById('clearStationsBtn').onclick = clearStationResult;
+    document.getElementById('stationFitBtn').onclick = fitStationLines;
+    document.getElementById('stationBusChk').onchange = function () {
+        stationFilter.bus = this.checked;
+        applyStationFilter();
+    };
+    document.getElementById('stationMetroChk').onchange = function () {
+        stationFilter.metro = this.checked;
+        applyStationFilter();
+    };
+    document.getElementById('stationStopChk').onchange = function () {
+        stationFilter.stops = this.checked;
+        applyStationFilter();
+    };
+    renderStationWalkChips();
     document.getElementById('clearCompaniesBtn').onclick = clearAllCompanies;
     document.getElementById('exportPkgBtn').onclick = exportPackage;
     document.getElementById('importPkgBtn').onclick = showPkgModal;
@@ -1192,6 +1286,7 @@ function initApp() {
 
     // 几何缓存先于恢复/深链接加载，使其重建时可直接命中
     loadGeomCache();
+    loadStationLineCache();
     // 深链接（?point=lng,lat&run=1…）优先于本地保存的方案
     if (!applyDeepLink()) restoreState();
     // 导入过的候选点跨会话恢复（用保存的坐标，不再调用检索接口）
@@ -1254,6 +1349,7 @@ function removeCompany(id) {
         x.overlays.forEach(function (o) { o.setMap(null); });
     });
     circles = circles.filter(function (x) { return x.companyId !== id; });
+    if (stationResult && stationResult.companyId === id) clearStationResult();
     renderCircleList();
     renderChips();
     renderCompanySelects();
@@ -1273,6 +1369,7 @@ function clearAllCompanies() {
     });
     circles.forEach(function (c) { c.overlays.forEach(function (o) { o.setMap(null); }); });
     circles = [];
+    clearStationResult();
     renderCircleList();
     renderChips();
     renderCompanySelects();
@@ -1324,6 +1421,24 @@ function renderCompanySelects() {
         sel.appendChild(opt0);
     } else if (prev && companies[prev]) {
         sel.value = prev;
+    }
+    // 附近车站的起点选择（与等时圈独立）
+    var stSel = document.getElementById('stationCompany');
+    var stPrev = stSel.value;
+    stSel.innerHTML = '';
+    list.forEach(function (c) {
+        var opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        stSel.appendChild(opt);
+    });
+    if (!list.length) {
+        var optSt = document.createElement('option');
+        optSt.value = '';
+        optSt.textContent = '先添加起点';
+        stSel.appendChild(optSt);
+    } else if (stPrev && companies[stPrev]) {
+        stSel.value = stPrev;
     }
     // 排序下拉：保留 max/dist，动态追加每个起点
     var sortSel = document.getElementById('sortBy');
@@ -2464,6 +2579,902 @@ function clearCommunities() {
     renderPoiList();
 }
 
+/* ============ 附近车站与途经线路（步行可达 → 线路走向） ============
+ * 流程：PlaceSearch 找公交站/地铁站 → AMap.Walking 逐站算真实步行时间
+ *      → 站点 address 里的线路名 → AMap.LineSearch 取折线 → 画线。
+ * 公交站 POI 的 address 即途经线路列表（如「167路;18路」）；地铁站为线路名
+ * （如「1号线;2号线;8号线」），查询时加「地铁」前缀更准。
+ * 线路走向按「城市|线路名」用 lz-string 压缩缓存，换起点重复查询可直接复用。 */
+var STATION_BUS_COLORS = ['#0891b2', '#7c3aed', '#c026d3', '#db2777', '#ea580c', '#65a30d', '#2563eb', '#b45309'];
+var STATION_METRO_COLORS = ['#e4002b', '#00a650', '#f7b500', '#8e44ad', '#0087c8', '#ef7c00', '#a0a0a0', '#00b3b0'];
+var STATION_MAX_CANDIDATES = 24;   // 最多对 24 个候选站做步行路径计算（控制配额与耗时）
+var STATION_MAX_LINES = 50;        // 最多取 50 条线路走向（按步行时间由近到远优先）
+var STATION_LINE_CACHE_KEY = 'house_tool_station_line_cache_v2'; // v2：附带 via_stops 沿途站点
+var STATION_LINE_CACHE_OLD_KEY = 'house_tool_station_line_cache';
+var STATION_LINE_CACHE_MAX = 120;
+var STATION_LINE_CACHE_TTL = 30 * 24 * 3600 * 1000;
+var stationLineCache = {};
+var stationLineCacheWarned = false;
+var STATION_WALK_CACHE_KEY = 'house_tool_station_walk_cache';
+var stationWalkCache = loadJson(STATION_WALK_CACHE_KEY, {});
+
+function loadStationLineCache() {
+    stationLineCache = {};
+    try { localStorage.removeItem(STATION_LINE_CACHE_OLD_KEY); } catch (e) { /* ignore */ }
+    try {
+        var o = JSON.parse(localStorage.getItem(STATION_LINE_CACHE_KEY) || '{}') || {};
+        var now = Date.now(), changed = false;
+        Object.keys(o).forEach(function (k) {
+            var e = o[k];
+            if (!e || !e.g || !e.t || now - e.t > STATION_LINE_CACHE_TTL) { changed = true; return; }
+            stationLineCache[k] = e;
+        });
+        var keys = Object.keys(stationLineCache).sort(function (a, b) { return stationLineCache[a].t - stationLineCache[b].t; });
+        while (keys.length > STATION_LINE_CACHE_MAX) { delete stationLineCache[keys.shift()]; changed = true; }
+        if (changed) persistStationLineCache();
+    } catch (e) { stationLineCache = {}; }
+}
+
+function persistStationLineCache() {
+    try {
+        localStorage.setItem(STATION_LINE_CACHE_KEY, JSON.stringify(stationLineCache));
+    } catch (e) {
+        // 配额超限：丢掉较旧的一半再试一次，仍失败则本次会话只留内存
+        var keys = Object.keys(stationLineCache).sort(function (a, b) { return stationLineCache[a].t - stationLineCache[b].t; });
+        keys.slice(0, Math.ceil(keys.length / 2)).forEach(function (k) { delete stationLineCache[k]; });
+        try {
+            localStorage.setItem(STATION_LINE_CACHE_KEY, JSON.stringify(stationLineCache));
+        } catch (e2) {
+            if (!stationLineCacheWarned) {
+                stationLineCacheWarned = true;
+                toast('线路走向缓存已满，本次不再写入（不影响使用）', 4000);
+            }
+        }
+    }
+}
+
+function stationLineCacheKey(city, line) {
+    return line.kind + '|' + String(city || '').replace(/市$/, '').trim() + '|' + line.name;
+}
+
+function readStationLineCache(key) {
+    var e = stationLineCache[key];
+    if (!e || !e.g) return null;
+    if (Date.now() - e.t > STATION_LINE_CACHE_TTL) { delete stationLineCache[key]; persistStationLineCache(); return null; }
+    try {
+        var s = LZString.decompressFromUTF16(e.g);
+        return s ? JSON.parse(s) : null;
+    } catch (err) {
+        delete stationLineCache[key];
+        persistStationLineCache();
+        return null;
+    }
+}
+
+function writeStationLineCache(key, val) {
+    if (typeof LZString === 'undefined') return;
+    try {
+        stationLineCache[key] = { t: Date.now(), g: LZString.compressToUTF16(JSON.stringify(val)) };
+        var keys = Object.keys(stationLineCache).sort(function (a, b) { return stationLineCache[a].t - stationLineCache[b].t; });
+        while (keys.length > STATION_LINE_CACHE_MAX) { delete stationLineCache[keys.shift()]; }
+        persistStationLineCache();
+    } catch (e) { /* 压缩/存储失败时只影响缓存，不影响绘制 */ }
+}
+
+function normalizeLinePath(path) {
+    if (!path) return null;
+    if (typeof path === 'string') path = path.split(';');
+    if (!Array.isArray(path)) return null;
+    var out = [];
+    path.forEach(function (p) {
+        var lng, lat;
+        if (Array.isArray(p) && p.length >= 2) {
+            lng = parseFloat(p[0]); lat = parseFloat(p[1]);
+        } else if (typeof p === 'string') {
+            var q = p.split(',');
+            lng = parseFloat(q[0]); lat = parseFloat(q[1]);
+        } else if (p && typeof p === 'object') {
+            lng = parseFloat(p.lng); lat = parseFloat(p.lat);
+        }
+        if (isFinite(lng) && isFinite(lat)) out.push([lng, lat]);
+    });
+    return out.length >= 2 ? out : null;
+}
+
+// 高德 uicolor 可能是「E3002A」或「#E3002A」，统一成 6 位十六进制
+function normalizeHexColor(c) {
+    if (typeof c !== 'string') return '';
+    c = c.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(c)) return c;
+    if (/^[0-9a-fA-F]{6}$/.test(c)) return '#' + c;
+    return '';
+}
+
+// via_stops 里含每站名称与 LngLat，直接复用，不额外消耗配额
+function normalizeLineStops(via) {
+    if (!Array.isArray(via)) return [];
+    var out = [];
+    via.forEach(function (s) {
+        if (!s) return;
+        var name = String(s.name || '').trim();
+        var loc = s.location, lng, lat;
+        if (Array.isArray(loc)) {
+            lng = parseFloat(loc[0]); lat = parseFloat(loc[1]);
+        } else if (loc && typeof loc === 'object') {
+            lng = parseFloat(loc.lng); lat = parseFloat(loc.lat);
+        }
+        if (!name || !isFinite(lng) || !isFinite(lat)) return;
+        out.push({ name: name, location: [lng, lat] });
+    });
+    return out;
+}
+
+// bus stop 的 address 是「167路;18路…」，地铁站是「1号线;2号线」；只保留像线路名的片段
+function looksLikeLineName(s) {
+    if (!s || s.length > 20) return false;
+    if (/[市区县镇街道号]$/.test(s)) return false;
+    return /路|线/.test(s);
+}
+
+function splitStationLines(addr) {
+    if (!addr) return [];
+    return String(addr).split(/[;；,，、|/]/).map(function (s) { return s.trim(); }).filter(looksLikeLineName);
+}
+
+function stationGroupKey(kind, rawName) {
+    var n = String(rawName || '').replace(/\s+/g, '');
+    if (kind === 'metro') {
+        n = n.replace(/[（(]地铁站[)）]/g, '');
+        n = n.replace(/地铁站.*$/, '');
+    } else {
+        n = n.replace(/[（(]公交站[)）]/g, '');
+    }
+    return kind + '|' + n;
+}
+
+function stationDisplayName(kind, rawName) {
+    var n = String(rawName || '').trim();
+    if (kind === 'metro') {
+        n = n.replace(/[（(]地铁站[)）]/g, '');
+        n = n.replace(/地铁站.*$/, '');
+        return n;
+    }
+    return n.replace(/[（(]公交站[)）]/g, '');
+}
+
+function groupStationPois(pois, kind) {
+    var groups = {};
+    (pois || []).forEach(function (p) {
+        if (!p || !p.location) return;
+        var key = stationGroupKey(kind, p.name);
+        var g = groups[key];
+        if (!g) {
+            g = groups[key] = {
+                key: key, kind: kind, name: stationDisplayName(kind, p.name),
+                location: p.location, distance: Infinity,
+                lineNames: [], _seen: {}
+            };
+        }
+        // 同名站点（如地铁多个出入口、路口两侧公交站）合并；取最近的一个作为步行目标
+        var dist = (p.distance != null && isFinite(p.distance)) ? p.distance : Infinity;
+        if (dist < g.distance) { g.distance = dist; g.location = p.location; }
+        splitStationLines(p.address).forEach(function (ln) {
+            if (g._seen[ln]) return;
+            g._seen[ln] = true;
+            g.lineNames.push(ln);
+        });
+    });
+    return Object.keys(groups).map(function (k) { return groups[k]; });
+}
+
+function stationWalkKey(from, to) {
+    return from[0].toFixed(5) + ',' + from[1].toFixed(5) + '|' + to[0].toFixed(5) + ',' + to[1].toFixed(5);
+}
+
+function walkTimeToStation(from, to, cb) {
+    var key = stationWalkKey(from, to);
+    if (stationWalkCache[key] != null) { cb(stationWalkCache[key]); return; }
+    amapRequest('步行到站', {
+        run: function (cb2) { new AMap.Walking().search(from, to, cb2); },
+        isSuccess: function (s, r) { return s === 'complete' && !!(r && r.routes && r.routes.length); },
+        onDone: function (status, result) {
+            if (status !== 'success') { cb(null); return; }
+            var route = result.routes[0];
+            var sec = route && route.time != null ? route.time : null;
+            if (sec != null) {
+                stationWalkCache[key] = sec;
+                var keys = Object.keys(stationWalkCache);
+                if (keys.length > 400) keys.slice(0, keys.length - 300).forEach(function (k) { delete stationWalkCache[k]; });
+                saveJson(STATION_WALK_CACHE_KEY, stationWalkCache);
+            }
+            cb(sec);
+        }
+    });
+}
+
+function stationWalkLabel(sec) {
+    if (sec == null) return '—';
+    if (sec < 60) return '＜1′';
+    return Math.round(sec / 60) + '′';
+}
+
+function pickLineColor(line, idx) {
+    if (line.kind === 'metro') {
+        var official = normalizeHexColor(line.geom && line.geom.uicolor);
+        if (official) return official;
+        return STATION_METRO_COLORS[idx % STATION_METRO_COLORS.length];
+    }
+    return STATION_BUS_COLORS[idx % STATION_BUS_COLORS.length];
+}
+
+function searchNearbyPois(type, center, radius, maxPages, cb) {
+    var acc = [];
+    function page(p) {
+        var ps = new AMap.PlaceSearch({ type: type, pageSize: 25, pageIndex: p, extensions: 'all' });
+        amapRequest('附近车站检索', {
+            run: function (cb2) { ps.searchNearBy('', center, radius, cb2); },
+            isSuccess: function (s, r) { return s === 'complete' && !!(r && r.poiList && r.poiList.pois); },
+            onDone: function (status, result) {
+                if (status !== 'success') { cb(acc); return; }
+                var pois = (result.poiList && result.poiList.pois) || [];
+                acc = acc.concat(pois);
+                if (pois.length >= 25 && p < maxPages) {
+                    setTimeout(function () { page(p + 1); }, 200);
+                    return;
+                }
+                cb(acc);
+            }
+        });
+    }
+    page(1);
+}
+
+function fetchStationLineGeom(city, line, ctrl, cb) {
+    var ck = stationLineCacheKey(city, line);
+    var hit = readStationLineCache(ck);
+    if (hit) { cb(hit); return; }
+    if (!AMap.LineSearch) { cb(null); return; }
+    var searchCity = city || '全国';
+    function attempt(query, isFallback) {
+        amapRequest('线路走向', {
+            run: function (cb2) {
+                var ls = new AMap.LineSearch({ city: searchCity, extensions: 'all', pageSize: 10 });
+                ls.search(query, cb2);
+            },
+            isSuccess: function (s, r) { return s === 'complete' && !!(r && r.lineInfo && r.lineInfo.length); },
+            onDone: function (status, result) {
+                if (ctrl && ctrl.aborted) { cb(null); return; }
+                if (status === 'success') {
+                    var list = result.lineInfo, pick = null, i;
+                    for (i = 0; i < list.length; i++) {
+                        if (line.kind === 'metro' && list[i].type === '地铁') { pick = list[i]; break; }
+                    }
+                    if (!pick && line.kind !== 'metro') {
+                        for (i = 0; i < list.length; i++) {
+                            if (list[i].type !== '地铁') { pick = list[i]; break; }
+                        }
+                    }
+                    pick = pick || list[0];
+                    var path = normalizeLinePath(pick.path);
+                    if (!path) { cb(null); return; }
+                    var stops = normalizeLineStops(pick.via_stops);
+                    var val = {
+                        name: pick.name || line.name,
+                        start: pick.start_stop || '',
+                        end: pick.end_stop || '',
+                        uicolor: normalizeHexColor(pick.uicolor),
+                        via: stops.length,
+                        stops: stops,
+                        path: path
+                    };
+                    writeStationLineCache(ck, val);
+                    cb(val);
+                    return;
+                }
+                // 地铁站 address 写作「1号线」，优先按「地铁1号线」查；查不到再退回原名
+                if (line.kind === 'metro' && !isFallback && query !== line.name) { attempt(line.name, true); return; }
+                cb(null);
+            }
+        });
+    }
+    attempt(line.kind === 'metro' ? ('地铁' + line.name) : line.name, false);
+}
+
+function fetchAllStationLines(lines, city, ctrl, onProgress, onDone) {
+    var total = lines.length, started = 0, finished = 0;
+    if (!total) { onDone(); return; }
+    function pump() {
+        while (!ctrl.aborted && started < total && started - finished < 2) {
+            (function (line) {
+                started++;
+                fetchStationLineGeom(city, line, ctrl, function (val) {
+                    finished++;
+                    if (val) line.geom = val;
+                    onProgress(finished, total);
+                    if (finished >= total) {
+                        if (!ctrl.aborted) onDone();
+                        return;
+                    }
+                    pump();
+                });
+            })(lines[started]);
+        }
+    }
+    pump();
+}
+
+function drawStationResult(result) {
+    var drawn = 0;
+    result.lines.forEach(function (line, idx) {
+        if (!line.geom || !line.geom.path || line.geom.path.length < 2) return;
+        line.color = pickLineColor(line, idx);
+        line.baseWeight = line.kind === 'metro' ? 5 : 3;
+        line.baseOpacity = line.kind === 'metro' ? 0.85 : 0.55;
+        line.baseZ = line.kind === 'metro' ? 130 : 120;
+        // 白色描边作为高亮光晕：平时不挂到地图，悬停/选中时显示
+        line.halo = new AMap.Polyline({
+            path: line.geom.path,
+            strokeColor: '#ffffff',
+            strokeWeight: line.baseWeight + 6,
+            strokeOpacity: 0.95,
+            lineJoin: 'round',
+            zIndex: 146,
+            bubble: false
+        });
+        var poly = new AMap.Polyline({
+            path: line.geom.path,
+            strokeColor: line.color,
+            strokeWeight: line.baseWeight,
+            strokeOpacity: line.baseOpacity,
+            lineJoin: 'round',
+            zIndex: line.baseZ,
+            bubble: false
+        });
+        poly.setMap(map);
+        poly.on('mouseover', function (e) {
+            setHoveredStationLine(line);
+            mapTipShow((line.kind === 'metro' ? '地铁 ' : '') + line.name, e);
+        });
+        poly.on('mousemove', function (e) { mapTipMove(e); });
+        poly.on('mouseout', function () {
+            setHoveredStationLine(null);
+            mapTipHide();
+        });
+        poly.on('click', function (e) {
+            mapTipHide();
+            selectStationLine(line);
+            showStationLineInfo(line, e && e.lnglat);
+        });
+        line.polyline = poly;
+        drawn++;
+    });
+    result.stations.forEach(function (s) {
+        var marker = new AMap.Marker({
+            map: map,
+            position: s.location,
+            zIndex: 150,
+            title: s.name,
+            bubble: false,
+            content: '<div class="st-dot' + (s.kind === 'metro' ? ' metro' : '') + '">' + (s.kind === 'metro' ? '🚇' : '🚌') + '</div>',
+            offset: new AMap.Pixel(-11, -11)
+        });
+        marker.on('mouseover', function (e) { mapTipShow(s.name, e); });
+        marker.on('mousemove', function (e) { mapTipMove(e); });
+        marker.on('mouseout', function () { mapTipHide(); });
+        marker.on('click', function () { mapTipHide(); showStationInfo(s); });
+        s.marker = marker;
+    });
+    buildLineStops(result);
+    applyStationFilter();
+    result.drawn = drawn;
+    if (result.stations.length) {
+        map.setFitView(result.stations.map(function (s) { return s.marker; }), false, fitAvoid());
+    }
+}
+
+/* 线路沿途站点：LineSearch 的 via_stops 已随折线返回，聚合去重后画小白点，零额外请求 */
+function buildLineStops(result) {
+    var mapStops = {}, stops = [];
+    result.lines.forEach(function (line) {
+        line.stopRefs = [];
+        if (!line.geom || !Array.isArray(line.geom.stops)) return;
+        var seen = {};
+        line.geom.stops.forEach(function (st) {
+            var key = st.name + '|' + st.location[0].toFixed(4) + ',' + st.location[1].toFixed(4);
+            var item = mapStops[key];
+            if (!item) {
+                item = mapStops[key] = {
+                    key: key, name: st.name, location: st.location,
+                    lines: [], _lineSeen: {}, kinds: { bus: false, metro: false }, kind: line.kind
+                };
+                stops.push(item);
+            }
+            if (!item._lineSeen[line.key]) {
+                item._lineSeen[line.key] = true;
+                item.lines.push(line);
+            }
+            item.kinds[line.kind] = true;
+            if (line.kind === 'metro') item.kind = 'metro';
+            if (!seen[key]) { seen[key] = true; line.stopRefs.push(item); }
+        });
+    });
+    result.stops = stops;
+    result.stopCount = stops.length;
+    stops.forEach(function (st) {
+        var marker = new AMap.CircleMarker({
+            center: st.location,
+            radius: 2.5,
+            strokeColor: st.kinds.metro ? '#dc2626' : '#0891b2',
+            strokeWeight: 1,
+            fillColor: '#ffffff',
+            fillOpacity: 0.95,
+            zIndex: 132,
+            bubble: false
+        });
+        marker.setMap(map);
+        marker.on('mouseover', function (e) { mapTipShow(st.name, e); });
+        marker.on('mousemove', function (e) { mapTipMove(e); });
+        marker.on('mouseout', function () { mapTipHide(); });
+        marker.on('click', function () { mapTipHide(); showLineStopInfo(st); });
+        st.marker = marker;
+    });
+}
+
+/* 悬浮提示：跟随鼠标显示线路名/站名，不产生地图位移 */
+function mapTipPoint(e) {
+    if (e) {
+        var oe = e.originEvent;
+        if (oe && typeof oe.clientX === 'number') return { x: oe.clientX, y: oe.clientY };
+        if (e.lnglat && map) {
+            var p = map.lngLatToContainer(e.lnglat);
+            var r = map.getContainer().getBoundingClientRect();
+            return { x: r.left + p.getX(), y: r.top + p.getY() };
+        }
+    }
+    return null;
+}
+
+function mapTipShow(text, e) {
+    if (!mapTipEl) mapTipEl = document.getElementById('mapTip');
+    if (!mapTipEl || !text) return;
+    mapTipEl.textContent = text;
+    mapTipEl.style.display = 'block';
+    mapTipW = mapTipEl.offsetWidth;
+    mapTipH = mapTipEl.offsetHeight;
+    mapTipMove(e);
+}
+
+function mapTipMove(e) {
+    if (!mapTipEl || mapTipEl.style.display === 'none') return;
+    var pt = mapTipPoint(e);
+    if (!pt) return;
+    var pad = 14;
+    var left = pt.x + pad;
+    if (left + mapTipW > window.innerWidth - 8) left = pt.x - mapTipW - pad;
+    if (left < 8) left = 8;
+    var top = pt.y - mapTipH - 12;
+    if (top < 8) top = pt.y + 18;
+    mapTipEl.style.left = left + 'px';
+    mapTipEl.style.top = top + 'px';
+}
+
+function mapTipHide() {
+    if (!mapTipEl) mapTipEl = document.getElementById('mapTip');
+    if (mapTipEl) mapTipEl.style.display = 'none';
+}
+
+function ensureStationInfoWindow() {
+    if (!stationInfoWindow) {
+        stationInfoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -12), autoMove: false });
+    }
+    // 与候选点详情互斥，避免两个 InfoWindow 叠在一起
+    if (infoWindow) { try { infoWindow.close(); } catch (e) { /* ignore */ } }
+    return stationInfoWindow;
+}
+
+function showLineStopInfo(st) {
+    var iw = ensureStationInfoWindow();
+    var badges = st.lines.map(function (l) {
+        return '<span class="badge" style="background:' + (l.color || '#6b7280') + '">' + escapeHtml(l.name) + '</span>';
+    }).join('');
+    iw.setContent(
+        '<div style="font-size:13px;padding:4px 6px;max-width:280px">' +
+        '<b>' + (st.kind === 'metro' ? '🚇 ' : '🚌 ') + escapeHtml(st.name) + '</b><br>' +
+        '<span style="font-size:12px;color:#6b7280">' + st.lines.length + ' 条线路经过</span>' +
+        '<div style="margin-top:5px;max-height:140px;overflow:auto">' + badges + '</div>' +
+        '</div>'
+    );
+    iw.open(map, st.location);
+}
+
+function setHoveredStationLine(line) {
+    if (hoveredStationLine === line) return;
+    var prev = hoveredStationLine;
+    hoveredStationLine = line;
+    refreshStationLineVisual(prev);
+    refreshStationLineVisual(line);
+}
+
+function selectStationLine(line) {
+    var prev = selectedStationLine;
+    selectedStationLine = (selectedStationLine === line) ? null : line;
+    refreshStationLineVisual(prev);
+    refreshStationLineVisual(line);
+}
+
+function clearSelectedStationLine() {
+    if (!selectedStationLine) return;
+    var prev = selectedStationLine;
+    selectedStationLine = null;
+    refreshStationLineVisual(prev);
+}
+
+function applyStationLineVisual(line, active) {
+    if (!line || !line.polyline) return;
+    var visible = !!stationFilter[line.kind];
+    if (active && visible) {
+        if (line.halo) line.halo.setMap(map);
+        if (line.halo) line.halo.setOptions({ strokeWeight: line.baseWeight + 6, strokeOpacity: 0.95, zIndex: 146 });
+        line.polyline.setOptions({ strokeWeight: line.baseWeight + 2, strokeOpacity: 1, zIndex: 147 });
+    } else {
+        if (line.halo) line.halo.setMap(null);
+        line.polyline.setOptions({ strokeWeight: line.baseWeight, strokeOpacity: line.baseOpacity, zIndex: line.baseZ });
+    }
+    if (line.listItem) line.listItem.classList.toggle('active', active && visible);
+    (line.stopRefs || []).forEach(function (st) {
+        if (!st.marker) return;
+        if (active) {
+            st.marker.setOptions({ radius: 4, strokeWeight: 2, strokeColor: line.color, zIndex: 148 });
+        } else {
+            st.marker.setOptions({
+                radius: 2.5, strokeWeight: 1,
+                strokeColor: st.kinds.metro ? '#dc2626' : '#0891b2', zIndex: 132
+            });
+        }
+    });
+}
+
+function refreshStationLineVisual(line) {
+    if (!line) return;
+    applyStationLineVisual(line, line === hoveredStationLine || line === selectedStationLine);
+}
+
+function applyStationFilter() {
+    if (!stationResult) return;
+    if (hoveredStationLine && !stationFilter[hoveredStationLine.kind]) mapTipHide();
+    stationResult.lines.forEach(function (line) {
+        if (!line.polyline) return;
+        if (!stationFilter[line.kind] && hoveredStationLine === line) hoveredStationLine = null;
+        if (stationFilter[line.kind]) line.polyline.show(); else line.polyline.hide();
+        if (line.halo) {
+            // 高亮中的线路跟随所属类型显隐
+            if (!stationFilter[line.kind] || !(line === hoveredStationLine || line === selectedStationLine)) line.halo.setMap(null);
+            else line.halo.setMap(map);
+        }
+        if (line.listItem) {
+            line.listItem.classList.toggle('active', !!stationFilter[line.kind] &&
+                (line === hoveredStationLine || line === selectedStationLine));
+        }
+    });
+    stationResult.stations.forEach(function (s) {
+        if (!s.marker) return;
+        if (stationFilter[s.kind]) s.marker.show(); else s.marker.hide();
+    });
+    (stationResult.stops || []).forEach(function (st) {
+        if (!st.marker) return;
+        var kindOn = (stationFilter.bus && st.kinds.bus) || (stationFilter.metro && st.kinds.metro);
+        if (stationFilter.stops && kindOn) st.marker.show(); else st.marker.hide();
+    });
+}
+
+function fitStationLines() {
+    if (!stationResult) { toast('请先查询附近车站'); return; }
+    var ovs = [];
+    stationResult.lines.forEach(function (line) { if (line.polyline) ovs.push(line.polyline); });
+    stationResult.stations.forEach(function (s) { if (s.marker) ovs.push(s.marker); });
+    if (ovs.length) map.setFitView(ovs, false, fitAvoid());
+}
+
+function showStationInfo(s) {
+    var iw = ensureStationInfoWindow();
+    var badges = s.lines.map(function (l) {
+        return '<span class="badge" style="background:' + (l.color || '#6b7280') + '">' + escapeHtml(l.name) + '</span>';
+    }).join('');
+    iw.setContent(
+        '<div style="font-size:13px;padding:4px 6px;max-width:280px">' +
+        '<b>' + (s.kind === 'metro' ? '🚇 ' : '🚌 ') + escapeHtml(s.name) + '</b><br>' +
+        '<span style="font-size:12px;color:#6b7280">步行 ' + stationWalkLabel(s.walkSec) + ' · ' + s.lines.length + ' 条线路</span>' +
+        '<div style="margin-top:5px;max-height:140px;overflow:auto">' + (badges || '<span style="font-size:12px;color:#9ca3af">无线路信息</span>') + '</div>' +
+        '</div>'
+    );
+    iw.open(map, s.location);
+}
+
+function stationLinePointNearCenter(line) {
+    var c = map.getCenter();
+    var best = null, bestD = Infinity;
+    (line.geom.path || []).forEach(function (p) {
+        var dx = p[0] - c.getLng(), dy = p[1] - c.getLat();
+        var d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = p; }
+    });
+    return best || (line.geom.path && line.geom.path[0]);
+}
+
+function showStationLineInfo(line, at) {
+    if (!line.geom) return;
+    var iw = ensureStationInfoWindow();
+    var g = line.geom;
+    // 地图上点击时用点击位置，避免把视野拉到整条线中点；列表点击则用中点
+    var pos = at || g.path[Math.floor(g.path.length / 2)];
+    iw.setContent(
+        '<div style="font-size:13px;padding:4px 6px;max-width:280px">' +
+        '<b style="color:' + (line.color || '#111827') + '">' + escapeHtml(g.name) + '</b><br>' +
+        '<span style="font-size:12px;color:#6b7280">' + escapeHtml(g.start || '') + (g.start && g.end ? ' → ' : '') + escapeHtml(g.end || '') +
+        (g.via ? ' · 途经 ' + g.via + ' 站' : '') + '</span>' +
+        '</div>'
+    );
+    iw.open(map, pos);
+}
+
+function renderStationWalkChips() {
+    var box = document.getElementById('stationWalkChips');
+    if (!box) return;
+    box.innerHTML = '';
+    [5, 10, 15, 20].forEach(function (m) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'ghost min-chip';
+        b.textContent = m + ' 分钟';
+        b.onclick = function () { document.getElementById('stationWalkMin').value = m; };
+        box.appendChild(b);
+    });
+}
+
+function renderStationPanel() {
+    var box = document.getElementById('stationList');
+    if (!box) return;
+    box.innerHTML = '';
+    var r = stationResult;
+    if (!r) {
+        box.innerHTML = '<div class="hint" style="padding:6px 2px">查询起点步行可达的公交站/地铁站，并画出途经这些站的全部线路。按真实步行路径计时，会消耗高德配额。</div>';
+        updateActionStates();
+        return;
+    }
+    var busStations = r.stations.filter(function (s) { return s.kind === 'bus'; }).length;
+    var metroStations = r.stations.length - busStations;
+    var busLines = r.lines.filter(function (l) { return l.kind === 'bus'; }).length;
+    var metroLines = r.lines.length - busLines;
+    var head = document.createElement('div');
+    head.className = 'hint';
+    head.style.padding = '6px 2px';
+    head.textContent = '步行 ≤' + r.walkMinutes + ' 分钟：' + r.stations.length + ' 个车站（公交 ' + busStations +
+        ' · 地铁 ' + metroStations + '），' + r.lines.length + ' 条线路（地铁 ' + metroLines + ' · 公交 ' + busLines + '）' +
+        (r.stopCount ? '，沿途 ' + r.stopCount + ' 个站' : '') +
+        (r.truncated ? '，已截断 ' + r.truncated + ' 条' : '') + (r.candidateTruncated ? '，仅分析最近 ' + STATION_MAX_CANDIDATES + ' 个候选站' : '') +
+        (r.failedWalk ? '，' + r.failedWalk + ' 个站点步行计算失败已忽略' : '');
+    box.appendChild(head);
+    r.stations.forEach(function (s) {
+        var row = document.createElement('div');
+        row.className = 'poi-item station-row';
+        var names = s.lines.map(function (l) { return l.name; });
+        var shown = names.slice(0, 8).join('、') + (names.length > 8 ? '…' : '');
+        row.innerHTML = '<div><b>' + (s.kind === 'metro' ? '🚇 ' : '🚌 ') + escapeHtml(s.name) + '</b>' +
+            ' <span class="meta">步行 ' + stationWalkLabel(s.walkSec) + ' · ' + s.lines.length + ' 条线路</span></div>' +
+            '<div class="meta">' + (escapeHtml(shown) || '无线路信息') + '</div>';
+        row.onclick = function () {
+            map.panTo(s.location);
+            showStationInfo(s);
+        };
+        box.appendChild(row);
+    });
+    if (r.lines.length) {
+        var det = document.createElement('details');
+        det.style.marginTop = '6px';
+        var sum = document.createElement('summary');
+        sum.textContent = '线路清单（已画 ' + (r.drawn || 0) + ' / ' + r.lines.length + ' 条）';
+        det.appendChild(sum);
+        var list = document.createElement('div');
+        list.className = 'line-list';
+        r.lines.forEach(function (l) {
+            var item = document.createElement('div');
+            item.className = 'line-item';
+            item.title = l.geom ? (l.geom.start + ' → ' + l.geom.end) : '未取到走向';
+            var dot = document.createElement('span');
+            dot.className = 'dot';
+            dot.style.background = l.color || '#d1d5db';
+            var nm = document.createElement('span');
+            nm.className = 'nm';
+            nm.textContent = (l.kind === 'metro' ? '🚇 ' : '') + l.name + (l.geom ? '' : '（无走向）') +
+                (l.geom && l.geom.stops && l.geom.stops.length ? ' · ' + l.geom.stops.length + ' 站' : '');
+            item.appendChild(dot);
+            item.appendChild(nm);
+            l.listItem = item;
+            if (l === selectedStationLine) item.classList.add('active');
+            item.onmouseenter = function () { setHoveredStationLine(l); };
+            item.onmouseleave = function () { setHoveredStationLine(null); };
+            item.onclick = function () {
+                if (!l.polyline) return;
+                mapTipHide();
+                selectStationLine(l);
+                // 线路已在当前视野内就不动镜头，只就近打开详情
+                var inView = false;
+                var bounds = map.getBounds();
+                for (var pi = 0; pi < l.geom.path.length; pi++) {
+                    if (bounds.contains(new AMap.LngLat(l.geom.path[pi][0], l.geom.path[pi][1]))) { inView = true; break; }
+                }
+                var pos;
+                if (inView) {
+                    pos = stationLinePointNearCenter(l);
+                } else {
+                    map.setFitView([l.polyline], false, fitAvoid());
+                    pos = l.geom.path[Math.floor(l.geom.path.length / 2)];
+                }
+                showStationLineInfo(l, pos);
+            };
+            list.appendChild(item);
+        });
+        det.appendChild(list);
+        box.appendChild(det);
+    }
+    updateActionStates();
+}
+
+function clearStationResult() {
+    if (stationResult) {
+        stationResult.lines.forEach(function (l) {
+            if (l.polyline) l.polyline.setMap(null);
+            if (l.halo) l.halo.setMap(null);
+        });
+        stationResult.stations.forEach(function (s) { if (s.marker) s.marker.setMap(null); });
+        (stationResult.stops || []).forEach(function (st) { if (st.marker) st.marker.setMap(null); });
+    }
+    stationResult = null;
+    hoveredStationLine = null;
+    selectedStationLine = null;
+    mapTipHide();
+    if (stationInfoWindow) stationInfoWindow.close();
+    renderStationPanel();
+}
+
+function searchNearbyStations() {
+    if (stationRunning || searchRunning || batchRunning || circlePending > 0) { toast('有任务正在进行，请稍候'); return; }
+    var companyId = document.getElementById('stationCompany').value;
+    var comp = companies[companyId];
+    if (!comp) { toast('请先添加起点位置'); return; }
+    var walkMin = parseInt(document.getElementById('stationWalkMin').value, 10);
+    if (!walkMin || walkMin < 1 || walkMin > 30) { toast('步行时长需为 1-30 分钟'); return; }
+    clearStationResult();
+    stationRunning = true;
+    stationCtrl = { aborted: false };
+    var ctrl = stationCtrl;
+    updateActionStates();
+
+    var center = [comp.lnglat.lng, comp.lnglat.lat];
+    var radius = Math.min(3000, Math.max(400, Math.round(walkMin * 120)));
+    var result = {
+        companyId: companyId, companyName: comp.name, walkMinutes: walkMin,
+        city: comp.city || cityName || '全国',
+        stations: [], lines: [], drawn: 0, truncated: 0, failedWalk: 0
+    };
+    stationResult = result;
+    var finished = false;
+    function finish(cancelled, msg) {
+        if (finished) return;
+        finished = true;
+        stationRunning = false;
+        stationCtrl = null;
+        progressHide();
+        renderStationPanel();
+        if (msg) toast(msg, 4000);
+    }
+    function cancel() {
+        if (finished) return;
+        ctrl.aborted = true;
+        // 还没画任何线就取消：不留半截结果
+        if (stationResult && !stationResult.drawn) stationResult = null;
+        finish(true, '已取消附近车站查询');
+    }
+    progressShow('附近车站检索中…', cancel);
+
+    var searchDone = 0, busPois = [], metroPois = [];
+    function afterSearch() {
+        if (++searchDone < 2 || ctrl.aborted) return;
+        // POI 自带 cityname（如「上海市」），比启动期异步的 getCity/逆地理更可靠，避免跨城同名线路
+        var allPois = busPois.concat(metroPois);
+        for (var pi = 0; pi < allPois.length; pi++) {
+            if (allPois[pi] && allPois[pi].cityname) { result.city = allPois[pi].cityname; break; }
+        }
+        var cands = groupStationPois(busPois, 'bus').concat(groupStationPois(metroPois, 'metro'));
+        var speedMpm = currentWalkSpeed() * 1000 / 60;
+        // 步行路径不短于直线距离：先按直线距离粗筛，省掉一批注定超时的步行请求
+        cands = cands.filter(function (s) {
+            return s.distance == null || !isFinite(s.distance) || s.distance <= walkMin * speedMpm * 1.35 + 80;
+        });
+        cands.sort(function (a, b) { return (a.distance || 0) - (b.distance || 0); });
+        if (cands.length > STATION_MAX_CANDIDATES) {
+            result.candidateTruncated = cands.length - STATION_MAX_CANDIDATES;
+            cands = cands.slice(0, STATION_MAX_CANDIDATES);
+        }
+        if (!cands.length) { finish(false, '步行 ' + walkMin + ' 分钟内未找到公交站或地铁站'); return; }
+
+        progressShow('计算步行到站时间（0/' + cands.length + '）…', cancel);
+        var included = [], wi = 0, doneWalk = 0, failedWalk = 0;
+
+        function onWalkDone() {
+            if (ctrl.aborted) return;
+            result.failedWalk = failedWalk;
+            result.stations = included.sort(function (a, b) { return a.walkSec - b.walkSec; });
+            if (!included.length) { finish(false, '步行 ' + walkMin + ' 分钟内未找到公交站或地铁站'); return; }
+            collectStationLines(result);
+            if (!result.lines.length) {
+                finish(false, '找到 ' + included.length + ' 个车站，但未解析到线路信息（高德站点数据缺少线路字段）');
+                return;
+            }
+            progressShow('获取线路走向（0/' + result.lines.length + '）…', cancel);
+            fetchAllStationLines(result.lines, result.city, ctrl, function (done, total) {
+                progressUpdate(done, total, '线路走向');
+            }, function () {
+                if (ctrl.aborted) return;
+                drawStationResult(result);
+                var msg = '步行 ≤' + walkMin + ' 分钟可达 ' + result.stations.length + ' 个车站，已画出 ' +
+                    result.drawn + ' 条线路' + (result.stopCount ? '、' + result.stopCount + ' 个沿途站点' : '') +
+                    (result.truncated ? '（另 ' + result.truncated + ' 条超出单次上限未画）' : '');
+                finish(false, msg);
+            });
+        }
+
+        function walkWorker() {
+            if (ctrl.aborted || wi >= cands.length) return;
+            var s = cands[wi++];
+            walkTimeToStation(center, [s.location.lng, s.location.lat], function (sec) {
+                if (ctrl.aborted) return;
+                if (sec == null) {
+                    failedWalk++;
+                } else if (sec <= walkMin * 60) {
+                    s.walkSec = sec;
+                    included.push(s);
+                }
+                doneWalk++;
+                progressUpdate(doneWalk, cands.length, '步行到站');
+                if (doneWalk >= cands.length) { onWalkDone(); return; }
+                walkWorker();
+            });
+        }
+        for (var w = 0; w < Math.min(3, cands.length); w++) walkWorker();
+    }
+
+    searchNearbyPois('150700', center, radius, 2, function (list) { busPois = list; afterSearch(); });
+    searchNearbyPois('150500', center, radius, 1, function (list) { metroPois = list; afterSearch(); });
+}
+
+/* 站点 → 线路：按步行时间由近到远收集，公交与地铁同名线路分开；超出上限截断 */
+function collectStationLines(result) {
+    var mapLines = {}, lines = [];
+    result.stations.forEach(function (s) {
+        s.lines = [];
+        s.lineNames.forEach(function (nm) {
+            var key = s.kind + '|' + nm;
+            if (!mapLines[key]) {
+                mapLines[key] = { key: key, name: nm, kind: s.kind, stationNames: [] };
+                lines.push(mapLines[key]);
+            }
+            mapLines[key].stationNames.push(s.name);
+            s.lines.push(mapLines[key]);
+        });
+    });
+    // 地铁优先（走向更常用），其余保持按步行时间的站点顺序
+    lines.sort(function (a, b) {
+        if (a.kind === b.kind) return 0;
+        return a.kind === 'metro' ? -1 : 1;
+    });
+    if (lines.length > STATION_MAX_LINES) {
+        result.truncated = lines.length - STATION_MAX_LINES;
+        lines = lines.slice(0, STATION_MAX_LINES);
+    }
+    result.lines = lines;
+}
+
 /* ============ 真实通勤时间（任意多起点，带缓存、重试与小并发） ============ */
 function computeCommute(item, onDone) {
     var actives = companyList();
@@ -2612,6 +3623,7 @@ function updateItemView(item) {
 }
 
 function openInfo(item) {
+    if (stationInfoWindow) stationInfoWindow.close();
     if (!infoWindow) infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -14) });
     var sub = item.data.subway ? ('🚇 最近地铁：' + escapeHtml(item.data.subway.name) + ' ' + item.data.subway.dist + 'm<br>') : '';
     infoWindow.setContent(
