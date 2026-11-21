@@ -2983,7 +2983,8 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
         return;
     }
     var color = (opts && opts.color) || PALETTE[circleSeq % PALETTE.length];
-    var geomSig = circleSig(companyId, mode, minutes, precise, dataMode);
+    // 恢复/导入时沿用圈保存时的签名：缓存里已有该圈几何就直接装配，不因算法指纹/速度漂移而重算
+    var geomSig = (opts && opts.geomSig) || circleSig(companyId, mode, minutes, precise, dataMode);
     var circle = {
         id: ++circleSeq,
         companyId: companyId,
@@ -5469,12 +5470,15 @@ function applyState(state, merge) {
         if (!cid) { res.skipped++; return; }   // 起点缺失（包内脏数据）
         var preciseFlag = (c.precise !== undefined) ? !!c.precise : false;
         var dataMode = (c.dataMode === 'precise') ? 'precise' : 'legacy';
-        var sig = circleSig(cid, c.mode, c.minutes, preciseFlag, dataMode);
+        // 优先用圈保存时的签名：几何就是以它为键存进缓存的。若改用当前参数重算签名，
+        // 代码指纹/速度一变就会 miss，把明明已缓存的圈排队重算一次（白耗配额）。
+        // 旧存档没有 geomSig 才退回当前签名（一次性 miss，重建后会写入 state）。
+        var sig = c.geomSig || circleSig(cid, c.mode, c.minutes, preciseFlag, dataMode);
         if (merge) {
             if (existingSigs[sig]) { res.skipped++; return; }
             existingSigs[sig] = true;
         }
-        var opts = { color: c.color, dataMode: dataMode };
+        var opts = { color: c.color, dataMode: dataMode, geomSig: sig };
         if (c.precise !== undefined) opts.precise = !!c.precise;   // v2 及更早无此字段 → 沿用勾选框
         if (typeof LZString !== 'undefined' && geomCache[sig] && geomCache[sig].g) {
             // 缓存命中：本圈不发 API、纯本地解压装配，无需按 400ms 排队。
@@ -5547,8 +5551,8 @@ function restoreState() {
 
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
-/* 收集方案内各圈几何：查找用创建时签名（几何实际存储键），导出键用当前签名
- * （= 携带的当前速度下，导入端回放时会计算出的键），保证导入端命中 */
+/* 收集方案内各圈几何：查找与导出键都用圈保存时的签名（几何实际存储键）。
+ * 导入端 applyState 同样以 c.geomSig 查缓存，两端统一，跨设备导入直接命中、不重算。 */
 function collectGeomForExport(state) {
     var out = {};
     (state.circles || []).forEach(function (c) {
@@ -5556,7 +5560,7 @@ function collectGeomForExport(state) {
         var storedKey = c.geomSig || circleSig(c.companyId, c.mode, c.minutes, !!c.precise, c.dataMode);
         var e = geomCache[storedKey];
         if (!e || !e.g) return;
-        out[circleSig(c.companyId, c.mode, c.minutes, !!c.precise, c.dataMode)] = { t: e.t, g: e.g };
+        out[storedKey] = { t: e.t, g: e.g };
     });
     return out;
 }
