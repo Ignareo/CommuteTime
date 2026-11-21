@@ -879,7 +879,7 @@ function buildPreciseRing(center, mode, minutes, onProgress, onDone, ctrl) {
  *   ④ 几何 = 起点步行盘 + 各可达站剩余步行盘 + 实际乘过的区段走廊，栅格化后合并。
  * 时间口径：区间运行均速地铁 30km/h、公交 15km/h（停站按 TP_DWELL 另计），步行按 config.yaml
  * 的 walk_speed 并计 TP_DETOUR 绕行系数。线网与常数都不随日期变化，故缓存签名用固定桶而非日期。 */
-var TRANSIT_PRECISE_VER = 'tp4';
+var TRANSIT_PRECISE_VER = 'tp5';
 var TRANSIT_DEPART_BUCKET = 'wd0830';
 var TP_DETOUR = 1.3;                             // 步行绕行系数（直线 → 实际路径）
 var TP_WAIT = { SUBWAY: 150, BUS: 240 };         // 首次上车候车（秒）
@@ -893,8 +893,9 @@ var TP_NODE_MERGE = { metro: 350, bus: 200 };
 var TP_BUS_QUEUE_BONUS = 240;                    // 公交站排队靠后，优先扩地铁
 // 预算：地铁站才补「站点线路表」检索；公交只扩起点附近与地铁站周边的站点，
 // 避免「每坐一条公交线就多出几十个待查站」的指数膨胀。上限随目标时长缩放，
-// 短圈少打请求，长圈才放宽（60 分钟约 60 次调用）。
-var TP_MAX_AREA = 32;                            // 地铁站线路表检索次数上限
+// 短圈少打请求，长圈才放宽（60 分钟约 90 次调用）。已查到站序的线路会直接写回
+// 沿途站点，所以这笔预算只需要用来发现「新线路」，不必为已知线路的换乘再付一次。
+var TP_MAX_AREA = 40;                            // 地铁站线路表检索次数上限
 var TP_MAX_LINE_METRO = 26;                      // 地铁线路检索次数上限
 var TP_MAX_LINE_BUS = 22;                        // 公交线路检索次数上限
 var TP_STATION_RADIUS_MAX = 900;
@@ -1278,7 +1279,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var routes = {}, queryState = {}, usedSeg = {};
     var areaCenters = [];
     var areaUsed = 0, lineMetro = 0, lineBus = 0, calls = 0, finished = false;
-    var areaCap = Math.min(TP_MAX_AREA, 12 + Math.round(minutes * 0.4));
+    var areaCap = Math.min(TP_MAX_AREA, 12 + Math.round(minutes * 0.5));
     var busCap = Math.min(TP_MAX_LINE_BUS, 6 + Math.round(minutes * 0.55));
     var heap = tpMakeHeap();
     var kx = 111320 * Math.cos(origin[1] * Math.PI / 180);
@@ -1371,14 +1372,14 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var node = {
             key: nk + (list.length ? '#' + (list.length + 1) : ''),
             kind: kind, name: stationDisplayName(kind, name),
-            lng: lng, lat: lat, lines: {}, known: false, best: Infinity
+            lng: lng, lat: lat, lines: {}, known: false, areaTried: false, best: Infinity
         };
         nodes[node.key] = node;
         list.push(node.key);
         gridAdd(node);
         var cached = cityKey ? tpStopCacheGet(cityKey, kind, node.name, lng, lat) : null;
         if (cached && cached.length) {
-            cached.forEach(function (ln) { node.lines[ln] = true; });
+            cached.forEach(function (ln) { node.lines[lineQuery(kind, ln)] = true; });
             node.known = true;
         }
         return node;
@@ -1391,6 +1392,17 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         if (sec >= n.best) return;
         n.best = sec;
         heap.push({ key: key, sec: sec, p: sec + (n.kind === 'bus' ? TP_BUS_QUEUE_BONUS : 0) });
+    }
+
+    /* 线路已查到站序 → 把线路写回沿途站点。站点线路表只该用来补「别的线路」，
+     * 已经查过的线路不必再靠区域检索才能换乘；否则区域检索预算一用完，换乘就整片消失。
+     * 站点已出过队时要重新入队一次，否则新补的线路永远不会被松弛。 */
+    function addLineTo(node, q) {
+        if (!node || !q || node.lines[q]) return;
+        node.lines[q] = true;
+        if (isFinite(node.best) && node.best < targetSec) {
+            heap.push({ key: node.key, sec: node.best, p: node.best + (node.kind === 'bus' ? TP_BUS_QUEUE_BONUS : 0) });
+        }
     }
 
     function areaCovered(node) {
@@ -1430,7 +1442,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (!node) return;
                 if (g.lineNames.length) {
                     node.known = true;
-                    g.lineNames.forEach(function (ln) { node.lines[ln] = true; });
+                    g.lineNames.forEach(function (ln) { node.lines[lineQuery(kind, ln)] = true; });
                 }
                 if (cityKey) tpStopCachePut(cityKey, kind, node.name, node.lng, node.lat, Object.keys(node.lines));
             });
@@ -1492,6 +1504,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (prev) t += tpDist(prev, p) / vms + TP_DWELL[m];
                 prev = p;
                 var nd = registerNode(m === 'SUBWAY' ? 'metro' : 'bus', st[0], p[0], p[1]);
+                if (nd) addLineTo(nd, q);
                 keys.push(nd ? nd.key : null);
                 pos.push(p);
                 cum.push(t);
@@ -1596,6 +1609,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                             if (st === 'success') absorbPois(result.poiList.pois);
                             areaCenters.push({ lng: n0.lng, lat: n0.lat, r: TP_AREA_RADIUS });
                             n0.known = true;
+                            n0.areaTried = true;
                             expand(n0, t0);
                         }
                     });
@@ -1639,6 +1653,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             var remain = Math.max(0, targetSec - n.best);
             stList.push({
                 name: n.name, kind: n.kind, lng: n.lng, lat: n.lat, arrival: n.best,
+                lines: Object.keys(n.lines).length, areaTried: n.areaTried,
                 radius: Math.max(TP_STATION_RADIUS_MIN,
                     Math.min(TP_STATION_RADIUS_MAX, remain * walkMs / TP_DETOUR))
             });
@@ -1669,11 +1684,21 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         Object.keys(routes).forEach(function (q) { if (routes[q].length) routeCount++; });
         var failedQueries = 0;
         Object.keys(queryState).forEach(function (q) { if (queryState[q] === 'failed') failedQueries++; });
+        // 没查过线路表、且只挂了一条线路的站：这些站可能还有别的线路没被发现（换乘缺失的口径说明）
+        var blind = [];
+        stList.forEach(function (s) {
+            if (s.areaTried || s.lines > 1) return;
+            blind.push(s.name);
+        });
         stList.sort(function (x, y) { return x.arrival - y.arrival; });
         debugInfo({
             corridors: corridors.length, routes: routeCount, failedQueries: failedQueries,
+            areaLeft: areaCap - areaUsed, blindCount: blind.length, blindSample: blind.slice(0, 8),
             stations: stList.map(function (s) {
-                return { name: s.name, kind: s.kind, min: Math.round(s.arrival / 60), r: Math.round(s.radius) };
+                return {
+                    name: s.name, kind: s.kind, min: Math.round(s.arrival / 60),
+                    r: Math.round(s.radius), ln: s.lines
+                };
             })
         });
         finished = true;
