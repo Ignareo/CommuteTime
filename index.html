@@ -270,7 +270,7 @@
             <div class="row" id="transitDataRow" style="margin-top:6px">
                 <select id="transitDataMode" style="flex:1" title="公交/地铁等时圈的数据源">
                     <option value="legacy">公交/地铁：高德到达圈（快，路网较旧）</option>
-                    <option value="precise">公交/地铁：实时线网逐站推算（慢，约 30~60 秒）</option>
+                    <option value="precise">公交/地铁：实时线网逐站推算（慢，可到 120 分钟）</option>
                 </select>
             </div>
             <div id="minChips"></div>
@@ -283,7 +283,7 @@
                     <span class="info-tip">精确圈沿真实路径逐方向二分边界（约 200 次调用、30~60 秒，更准）；不勾选按默认配速画直线近似圈，秒出。</span>
                 </span>
             </div>
-            <div class="hint" id="transitDataHint" style="margin-top:4px">实时模式从起点步行范围出发，按高德站点/线路检索现查线网（含新开通线路），逐站推算「上车—换乘—下车步行」可达范围：地铁 30km/h、公交 15km/h 并计候车与换乘耗时，结果只依赖线网结构与常数，可缓存复用。</div>
+            <div class="hint" id="transitDataHint" style="margin-top:4px">实时模式从起点步行范围出发，按高德站点/线路检索现查线网（含新开通线路），逐站推算「上车—换乘—下车步行」可达范围；逐线速度由导航反推校准，并用导航复核边界。时长可到 120 分钟（长圈耗时明显增加），结果可缓存复用。</div>
             <div id="circleList"></div>
             <details style="margin-top:8px">
                 <summary>高级：批量改时长 · 交集差集 · 导出</summary>
@@ -627,12 +627,16 @@ document.querySelector('#progBar button').onclick = function () {
     });
 })();
 
-/* 时长快捷 chips：公交 15/30/45/60，步行/骑行 15/30/45/60/90；点击填入输入框，仍可手输 */
+/* 时长快捷 chips：实时线网圈到 120 分钟，步行/骑行到 90，旧到达圈/Mapbox 到 60；点击填入输入框，仍可手输 */
 function renderMinChips() {
     var box = document.getElementById('minChips');
     box.innerHTML = '';
     var mode = document.getElementById('mode').value;
-    var opts = (mode === 'walk' || mode === 'ride') ? [15, 30, 45, 60, 90] : [15, 30, 45, 60];
+    var isTransit = mode === 'SUBWAY,BUS' || mode === 'SUBWAY' || mode === 'BUS';
+    var precise = isTransit && (document.getElementById('transitDataMode') || {}).value === 'precise';
+    var opts = precise ? [15, 30, 45, 60, 90, 120]
+        : (mode === 'walk' || mode === 'ride') ? [15, 30, 45, 60, 90]
+        : [15, 30, 45, 60];
     opts.forEach(function (m) {
         var b = document.createElement('button');
         b.type = 'button';
@@ -643,6 +647,8 @@ function renderMinChips() {
     });
 }
 document.getElementById('mode').onchange = renderMinChips;
+var dmChips = document.getElementById('transitDataMode');
+if (dmChips) dmChips.addEventListener('change', renderMinChips);
 renderMinChips();
 
 /* 转义后拼入 innerHTML / 高德 label，避免 POI 名或分享链接 ?name= 注入 HTML */
@@ -2535,7 +2541,16 @@ function initApp() {
             dmSel.title = transit ? '公交/地铁等时圈的数据源' : '仅公交/地铁圈可选数据源';
             if (dmHint) dmHint.style.display = transit ? '' : 'none';
         }
-        modeSel.addEventListener('change', sync);
+        // 旧到达圈/Mapbox 上限 60 分钟，实时线网圈与步行/骑行可到 120。只在用户主动切换时
+        // 钳制已填时长：初始化时 URL/方案包可能恢复了 90 分钟的实时圈，不能在这里抹掉。
+        function clampMinutes() {
+            var transit = modeSel.value === 'SUBWAY,BUS' || modeSel.value === 'SUBWAY' || modeSel.value === 'BUS';
+            var maxMin = (modeSel.value.indexOf('mapbox-') === 0 || (transit && dmSel.value === 'legacy')) ? 60 : 120;
+            var mi = document.getElementById('minutes');
+            if (mi && Number(mi.value) > maxMin) mi.value = maxMin;
+        }
+        modeSel.addEventListener('change', function () { sync(); clampMinutes(); });
+        dmSel.addEventListener('change', function () { sync(); clampMinutes(); });
         sync();
     })();
     document.getElementById('selectAllBtn').onclick = onSelectAll;
@@ -2927,8 +2942,11 @@ function onRetimeSelected() {
     if (!m || m < 1 || m > 120) { toast('请输入 1-120 分钟'); return; }
     var sels = circles.filter(function (c) { return c.visible !== false; });
     if (!sels.length) { toast('请先勾选要修改的等时圈'); return; }
-    var overLimit = sels.some(function (c) { return c.mode !== 'walk' && c.mode !== 'ride' && m > 60; });
-    if (overLimit) { toast('地铁/公交/Mapbox 圈时长需 ≤60 分钟'); return; }
+    var overLimit = sels.some(function (c) {
+        if (c.mode === 'walk' || c.mode === 'ride') return false;
+        return (c.mode.indexOf('mapbox-') === 0 || c.dataMode !== 'precise') && m > 60;
+    });
+    if (overLimit) { toast('高德到达圈/Mapbox 圈时长需 ≤60 分钟，实时线网圈可到 120 分钟'); return; }
     sels = sels.filter(function (c) { return c.minutes !== m; });
     if (!sels.length) { toast('选中圈已经是 ' + m + ' 分钟'); return; }
     toast('正在重建 ' + sels.length + ' 个圈为 ' + m + ' 分钟…', 4000);
@@ -2957,9 +2975,11 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
         : '';
     // 实时线网模式对地铁+公交、地铁、公交三种口径都适用（按 mode 过滤乘车段）
     if (dataMode === 'precise' && (mode !== 'SUBWAY,BUS' && mode !== 'SUBWAY' && mode !== 'BUS')) dataMode = 'legacy';
-    if (!minutes || minutes < 1 || minutes > (isTransit ? 60 : 120)) {
+    // 实时线网圈是自己逐站推算，没有高德到达圈的 60 分钟上限；Mapbox 接口仍限 60 分钟
+    var maxMinutes = (isTransitMode && dataMode === 'precise') ? 120 : (isTransit ? 60 : 120);
+    if (!minutes || minutes < 1 || minutes > maxMinutes) {
         toast(isMapbox ? 'Mapbox 圈时长需为 1-60 分钟'
-            : (isTransit ? '地铁/公交圈时长需为 1-60 分钟' : '步行/骑行圈时长需为 1-120 分钟'));
+            : (isTransit ? ('地铁/公交圈时长需为 1-' + maxMinutes + ' 分钟') : '步行/骑行圈时长需为 1-120 分钟'));
         return;
     }
     var color = (opts && opts.color) || PALETTE[circleSeq % PALETTE.length];
