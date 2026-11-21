@@ -267,11 +267,15 @@
                 </select>
                 <input type="number" id="minutes" min="1" max="120" value="30" style="flex:0 0 64px">
             </div>
-            <div class="row" id="transitDataRow" style="margin-top:6px">
-                <select id="transitDataMode" style="flex:1" title="公交/地铁等时圈的数据源">
+            <div class="row" id="transitDataRow" style="margin-top:6px;flex-wrap:wrap">
+                <select id="transitDataMode" style="flex:1 1 100%" title="公交/地铁等时圈的数据源">
                     <option value="legacy">公交/地铁：高德到达圈（快，路网较旧）</option>
                     <option value="precise">公交/地铁：实时线网逐站推算（慢，可到 120 分钟）</option>
                 </select>
+                <label style="flex:0 0 auto;font-size:12px;color:#374151;display:flex;align-items:center;gap:4px;white-space:nowrap" title="实时线网圈：下车后从车站继续步行的距离上限（直线半径，米）。超过硬上限会被自动卡住。改动仅对新建或刷新的圈生效，已有圈不自动重算。">
+                    下车后步行上限
+                    <input type="number" id="stationWalkMax" min="120" max="2000" step="50" style="flex:0 0 76px"> 米
+                </label>
             </div>
             <div id="minChips"></div>
             <button id="addCircleBtn">＋ 添加等时圈</button>
@@ -510,12 +514,32 @@ function applySpeedConfig(walkVal, rideVal) {
     if (isFinite(r) && r > 0 && r <= 40) RIDE_SPEED = r;
 }
 
-/* 下车后步行半径上限来自 config.yaml；限制在 [下限, 硬上限]，越界卡到边界 */
+/* 下车后步行半径上限：config.yaml 给默认值，用户可在网页改并存 localStorage（用户值优先）。
+ * 限制在 [下限, 硬上限]，越界卡到边界；硬上限防止设得过大拖慢几何生成。 */
+var STATION_WALK_MAX_KEY = 'house_tool_station_walk_max';
+function clampStationRadius(v) {
+    var n = parseFloat(v);
+    if (!isFinite(n)) return null;
+    return Math.max(TP_STATION_RADIUS_MIN, Math.min(TP_STATION_RADIUS_HARD_MAX, n));
+}
 function applyStationRadiusConfig(val) {
-    var v = parseFloat(val);
-    if (!isFinite(v)) return;
-    TP_STATION_RADIUS_MAX = Math.max(TP_STATION_RADIUS_MIN,
-        Math.min(TP_STATION_RADIUS_HARD_MAX, v));
+    var v = clampStationRadius(val);
+    if (v !== null) TP_STATION_RADIUS_MAX = v;
+}
+function syncStationWalkInput() {
+    var inp = document.getElementById('stationWalkMax');
+    if (inp) inp.value = TP_STATION_RADIUS_MAX;
+}
+/* 网页输入：clamp → 写全局 → 存 localStorage → 回写输入框（显示卡住后的值） */
+function onStationWalkMaxChange() {
+    var inp = document.getElementById('stationWalkMax');
+    if (!inp) return;
+    var v = clampStationRadius(inp.value);
+    if (v === null) { syncStationWalkInput(); toast('请输入有效的米数'); return; }
+    TP_STATION_RADIUS_MAX = v;
+    try { localStorage.setItem(STATION_WALK_MAX_KEY, String(v)); } catch (e) { /* ignore */ }
+    syncStationWalkInput();
+    toast('下车后步行上限已设为 ' + v + ' 米（新建/刷新圈生效，已有圈不变）');
 }
 
 /* 先读配置再加载地图 */
@@ -526,9 +550,20 @@ fetch('config.yaml')
         parseMapView(cfg.map_center, cfg.map_zoom);
         applySpeedConfig(cfg.walk_speed, cfg.ride_speed);
         applyStationRadiusConfig(cfg.station_walk_max_m);
+        // 用户网页设置优先于 config.yaml 默认值
+        try {
+            var saved = localStorage.getItem(STATION_WALK_MAX_KEY);
+            if (saved != null) applyStationRadiusConfig(saved);
+        } catch (e) { /* ignore */ }
+        syncStationWalkInput();
         initKeys(cfg.amap_key, cfg.amap_code, cfg.mapbox_token);
     })
     .catch(function () {
+        try {
+            var saved0 = localStorage.getItem(STATION_WALK_MAX_KEY);
+            if (saved0 != null) applyStationRadiusConfig(saved0);
+        } catch (e) { /* ignore */ }
+        syncStationWalkInput();
         initKeys('', '');
     });
 
@@ -2573,6 +2608,14 @@ function initApp() {
     document.getElementById('selectAllBtn').onclick = onSelectAll;
     document.getElementById('retimeBtn').onclick = onRetimeSelected;
     document.getElementById('refreshCirclesBtn').onclick = onRefreshSelected;
+    var stationWalkInp = document.getElementById('stationWalkMax');
+    if (stationWalkInp) {
+        stationWalkInp.onchange = onStationWalkMaxChange;
+        // 回车即提交（避免输入后还得点别处失焦才生效）
+        stationWalkInp.onkeydown = function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); stationWalkInp.blur(); }
+        };
+    }
     document.getElementById('exportBtn').onclick = exportGeoJSON;
     document.getElementById('exportIntersectBtn').onclick = exportIntersectGeoJSON;
     document.getElementById('onlyIntersect').onchange = function () {
