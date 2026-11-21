@@ -291,6 +291,7 @@
                     <button id="selectAllBtn" class="ghost">全选 / 全不选</button>
                     <input type="number" id="batchMinutes" min="1" max="120" placeholder="分钟" style="flex:0 0 70px">
                     <button id="retimeBtn" class="ghost">选中圈改为该时长</button>
+                    <button id="refreshCirclesBtn" class="ghost" title="清除选中圈的几何缓存并按当前算法/线网重新计算（实时圈较慢、会消耗高德配额）">刷新选中圈</button>
                 </div>
                 <div class="intersect-bar">
                     <label><input type="checkbox" id="onlyIntersect"> 只显示所选圈的交集</label>
@@ -2396,6 +2397,10 @@ function updateActionStates() {
     var retimeBtn = document.getElementById('retimeBtn');
     retimeBtn.disabled = !circles.length || anyBusy;
     retimeBtn.title = !circles.length ? '请先添加等时圈' : (anyBusy ? busyHint : '');
+    var refreshBtn = document.getElementById('refreshCirclesBtn');
+    refreshBtn.disabled = !circles.length || anyBusy;
+    refreshBtn.title = !circles.length ? '请先添加等时圈'
+        : (anyBusy ? busyHint : '清除选中圈的几何缓存并按当前算法/线网重新计算，会消耗高德配额');
     var batchBtn = document.getElementById('batchBtn');
     batchBtn.disabled = !count || anyBusy;
     batchBtn.title = !count ? '请先检索候选地点' : (anyBusy ? busyHint : '');
@@ -2555,6 +2560,7 @@ function initApp() {
     })();
     document.getElementById('selectAllBtn').onclick = onSelectAll;
     document.getElementById('retimeBtn').onclick = onRetimeSelected;
+    document.getElementById('refreshCirclesBtn').onclick = onRefreshSelected;
     document.getElementById('exportBtn').onclick = exportGeoJSON;
     document.getElementById('exportIntersectBtn').onclick = exportIntersectGeoJSON;
     document.getElementById('onlyIntersect').onchange = function () {
@@ -2959,6 +2965,43 @@ function onRetimeSelected() {
         var spec = { companyId: old.companyId, mode: old.mode, color: old.color, precise: old.precise, dataMode: old.dataMode };
         removeCircle(old.id);
         addCircleFrom(spec.companyId, spec.mode, m, false, { color: spec.color, precise: spec.precise, dataMode: spec.dataMode });
+        setTimeout(next, 500);
+    })();
+}
+
+/* 刷新选中圈：按当前算法/线网重新计算。与恢复存档不同，这里刻意用「当前签名」——
+ * 先删掉当前签名对应的几何缓存，再不带 geomSig 重建，命中必然 miss、走 API 重算；
+ * 完成后新几何以当前签名写回缓存与 state，刷新结果可长期复用。 */
+function onRefreshSelected() {
+    if (searchRunning || batchRunning || circlePending > 0) { toast('有任务正在进行，请稍候'); return; }
+    var sels = circles.filter(function (c) { return c.visible !== false; });
+    if (!sels.length) { toast('请先勾选要刷新的等时圈'); return; }
+    var hadReal = sels.some(function (c) {
+        var m = c.mode;
+        return m === 'SUBWAY,BUS' || m === 'SUBWAY' || m === 'BUS' || m === 'walk' || m === 'ride';
+    });
+    if (!confirm('将按当前算法与线网重新计算选中的 ' + sels.length + ' 个等时圈。' +
+        (hadReal ? '\n实时圈与精确圈会重新请求高德接口、较慢且消耗配额；原有几何缓存会被覆盖。' : '') +
+        '\n确定继续？')) return;
+    toast('正在刷新 ' + sels.length + ' 个等时圈…', 4000);
+    var i = 0;
+    (function next() {
+        if (i >= sels.length) return;
+        if (precisePending > 0) { setTimeout(next, 1000); return; }
+        var old = sels[i++];
+        // 当前签名（不用 old.geomSig）：删缓存后重建才会真正重算
+        var curSig = circleSig(old.companyId, old.mode, old.minutes, !!old.precise, old.dataMode);
+        if (curSig && geomCache[curSig]) { delete geomCache[curSig]; persistGeomCache(); }
+        var spec = { companyId: old.companyId, mode: old.mode, color: old.color, precise: old.precise, dataMode: old.dataMode };
+        var wasVisible = old.visible !== false;
+        removeCircle(old.id);
+        var seqBefore = circleSeq;
+        addCircleFrom(spec.companyId, spec.mode, old.minutes, false, {
+            color: spec.color, precise: spec.precise, dataMode: spec.dataMode
+        });
+        // 用新分配的 id 精确定位，避免起点缺失导致 addCircleFrom 提前返回时误改别的圈
+        var fresh = circles.find(function (c) { return c.id > seqBefore; });
+        if (fresh && !wasVisible) { fresh.visible = false; renderCircleList(); applyAllVisibility(); }
         setTimeout(next, 500);
     })();
 }
