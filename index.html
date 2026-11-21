@@ -510,6 +510,14 @@ function applySpeedConfig(walkVal, rideVal) {
     if (isFinite(r) && r > 0 && r <= 40) RIDE_SPEED = r;
 }
 
+/* 下车后步行半径上限来自 config.yaml；限制在 [下限, 硬上限]，越界卡到边界 */
+function applyStationRadiusConfig(val) {
+    var v = parseFloat(val);
+    if (!isFinite(v)) return;
+    TP_STATION_RADIUS_MAX = Math.max(TP_STATION_RADIUS_MIN,
+        Math.min(TP_STATION_RADIUS_HARD_MAX, v));
+}
+
 /* 先读配置再加载地图 */
 fetch('config.yaml')
     .then(function (r) { return r.text(); })
@@ -517,6 +525,7 @@ fetch('config.yaml')
         var cfg = parseYAML(text);
         parseMapView(cfg.map_center, cfg.map_zoom);
         applySpeedConfig(cfg.walk_speed, cfg.ride_speed);
+        applyStationRadiusConfig(cfg.station_walk_max_m);
         initKeys(cfg.amap_key, cfg.amap_code, cfg.mapbox_token);
     })
     .catch(function () {
@@ -934,6 +943,9 @@ var TP_BUS_QUEUE_BONUS = 240;                    // 公交站排队靠后，优�
 var TP_MAX_AREA = 40;                            // 地铁站线路表检索次数上限
 var TP_MAX_LINE_METRO = 26;                      // 地铁线路检索次数上限
 var TP_MAX_LINE_BUS = 22;                        // 公交线路检索次数上限
+// 下车后步行盘半径上限：默认 900m，可由 config.yaml 的 station_walk_max_m 调整，
+// 但不得超过硬上限（几何栅格/圈面积会随半径平方增长，过大既失真又拖慢 marching squares）
+var TP_STATION_RADIUS_HARD_MAX = 2000;
 var TP_STATION_RADIUS_MAX = 900;
 var TP_STATION_RADIUS_MIN = 120;
 var TP_GRID_CELL = 100;
@@ -2838,7 +2850,7 @@ function circleSig(companyId, mode, minutes, preciseFlag, dataMode) {
         // v3 及更早的存档/方案包/分享链接仍能命中几何缓存。
         // 逐线速度指纹也进签名：学到新线路/运营图调整后，旧几何必须失效
         parts.push('precise', TRANSIT_PRECISE_VER, TRANSIT_DEPART_BUCKET, currentWalkSpeed(),
-            tpSpeedSig(comp.city || cityName), tpAlgoSig());
+            TP_STATION_RADIUS_MAX, tpSpeedSig(comp.city || cityName), tpAlgoSig());
     }
     return parts.join('|');
 }
