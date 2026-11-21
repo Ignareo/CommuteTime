@@ -1694,6 +1694,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         debugInfo({
             corridors: corridors.length, routes: routeCount, failedQueries: failedQueries,
             areaLeft: areaCap - areaUsed, blindCount: blind.length, blindSample: blind.slice(0, 8),
+            loadedLines: Object.keys(routes),
             stations: stList.map(function (s) {
                 return {
                     name: s.name, kind: s.kind, min: Math.round(s.arrival / 60),
