@@ -208,7 +208,7 @@
         <div id="panelSummary" aria-live="polite"></div>
         <h1>⏱️ 等时圈通勤工具 <a class="h1-link" href="metro.html" title="查看各城市地铁站可达性排行">→ 地铁可达性</a></h1>
         <div id="guideBar">
-            <span>使用步骤：<b>① 设起点</b>（搜索或点图新建）→ <b>② 查附近车站线路</b>（可选）→ <b>③ 画等时圈</b>（可选精确路网圈）→ <b>④ 检索候选地点并批量算通勤</b></span>
+            <span>先<b>搜索或点击地图新建起点</b>，再使用后续功能</span>
             <button type="button" class="x" id="guideClose" title="关闭，不再显示" aria-label="关闭引导">✕</button>
         </div>
 
@@ -246,8 +246,8 @@
                 <button id="stationFitBtn" class="ghost" style="margin-left:auto" title="把视野缩放至全部线路范围">全览线路</button>
                 <button id="clearStationsBtn" class="ghost" title="移除地图上的车站与线路">清空</button>
             </div>
-            <div id="stationList"><div class="hint" style="padding:6px 2px">查询起点步行可达的公交站/地铁站，并画出途经这些站的全部线路与线路沿途站点。按真实步行路径计时，会消耗高德配额。</div></div>
-            <div class="hint">线路走向与沿途站点均来自高德「公交线路查询」；同一线路只画一个方向，地铁优先采用官方线路色。鼠标悬停或点击线路可高亮，点击沿途站点可看经过线路。</div>
+            <!-- <div id="stationList"><div class="hint" style="padding:6px 2px">查询起点步行可达的公交站/地铁站，并画出途经这些站的全部线路与线路沿途站点。按真实步行路径计时，会消耗高德配额。</div></div> -->
+            <!-- <div class="hint">线路走向与沿途站点均来自高德「公交线路查询」；同一线路只画一个方向，地铁优先采用官方线路色。鼠标悬停或点击线路可高亮，点击沿途站点可看经过线路。</div> -->
         </section>
 
         <section>
@@ -287,7 +287,7 @@
                     <span class="info-tip">精确圈沿真实路径逐方向二分边界（约 200 次调用、30~60 秒，更准）；不勾选按默认配速画直线近似圈，秒出。</span>
                 </span>
             </div>
-            <div class="hint" id="transitDataHint" style="margin-top:4px">实时模式从起点步行范围出发，按高德站点/线路检索现查线网（含新开通线路），逐站推算「上车—换乘—下车步行」可达范围；逐线速度由导航反推校准，并用导航复核边界。时长可到 120 分钟（长圈耗时明显增加），结果可缓存复用。</div>
+            <!-- <div class="hint" id="transitDataHint" style="margin-top:4px">实时模式从起点步行范围出发，按高德站点/线路检索现查线网（含新开通线路），逐站推算「上车—换乘—下车步行」可达范围；逐线速度由导航反推校准，并用导航复核边界。时长可到 120 分钟（长圈耗时明显增加），结果可缓存复用。</div> -->
             <div id="circleList"></div>
             <details style="margin-top:8px">
                 <summary>高级：批量改时长 · 刷新选中圈 · 交集差集 · 导出</summary>
@@ -304,7 +304,7 @@
                     <span id="intersectInfo"></span>
                     <span id="diffInfo"></span>
                 </div>
-                <div class="hint">未勾选的圈不参与交集/差集与导出；差集需刚好勾选 2 个圈，列表与批量计算跟随所显示区域。</div>
+                <!-- <div class="hint">未勾选的圈不参与交集/差集与导出；差集需刚好勾选 2 个圈，列表与批量计算跟随所显示区域。</div> -->
                 <div class="row" style="margin-top:8px">
                     <select id="coord" style="flex:0 0 110px">
                         <option value="WGS84">WGS84</option>
@@ -351,7 +351,7 @@
         </footer>
     </aside>
     <div id="container">
-        <div id="mapLegend">配色：候选点按真实通勤 ≤30分钟 绿 · ≤45 黄 · ≤60 橙 · &gt;60 红</div>
+        <!-- <div id="mapLegend">配色：候选点按真实通勤 ≤30分钟 绿 · ≤45 黄 · ≤60 橙 · &gt;60 红</div> -->
     </div>
 </div>
 <div id="toast" aria-live="polite"></div>
