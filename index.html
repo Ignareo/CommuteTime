@@ -975,7 +975,7 @@ var TP_BUS_QUEUE_BONUS = 240;                    // 公交站排队靠后，优�
 // 避免「每坐一条公交线就多出几十个待查站」的指数膨胀。上限随目标时长缩放，
 // 短圈少打请求，长圈才放宽（60 分钟约 90 次调用）。已查到站序的线路会直接写回
 // 沿途站点，所以这笔预算只需要用来发现「新线路」，不必为已知线路的换乘再付一次。
-var TP_MAX_AREA = 40;                            // 地铁站线路表检索次数上限
+var TP_MAX_AREA = 40;                            // 地铁站线路表检索次数上限（首遍与远端补查各半）
 var TP_MAX_LINE_METRO = 26;                      // 地铁线路检索次数上限
 var TP_MAX_LINE_BUS = 22;                        // 公交线路检索次数上限
 // 下车后步行盘半径上限：默认 900m，可由 config.yaml 的 station_walk_max_m 调整，
@@ -1463,9 +1463,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
 
     var nodes = {}, byName = {}, grid = {};
     var routes = {}, queryState = {};
-    var areaCenters = [];
+    var areaCenters = [], remotePicked = [];
     var areaUsed = 0, lineMetro = 0, lineBus = 0, calls = 0, finished = false;
     var areaCap = Math.min(TP_MAX_AREA, 12 + Math.round(minutes * 0.5));
+    // 首遍按到达顺序展开，预算容易在起点附近耗尽；留一半给收敛后的远端补查
+    var firstAreaCap = Math.ceil(areaCap * 0.5);
     var busCap = Math.min(TP_MAX_LINE_BUS, 6 + Math.round(minutes * 0.55));
     var heap = tpMakeHeap();
     var kx = 111320 * Math.cos(origin[1] * Math.PI / 180);
@@ -1486,6 +1488,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             origin: origin, minutes: minutes, mode: want, walkSpeed: currentWalkSpeed(),
             nearRadius: Math.round(nearRadius), pois: nearPois.length,
             nodes: Object.keys(nodes).length, calls: calls, areaUsed: areaUsed,
+            remotePicked: remotePicked,
             horizon: Math.round(horizonSec / 60),
             caps: { area: areaCap, metro: TP_MAX_LINE_METRO, bus: busCap, nav: navCap },
             lines: { metro: lineMetro, bus: lineBus },
@@ -1600,6 +1603,26 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (tpDist([c.lng, c.lat], [node.lng, node.lat]) <= c.r - 50) return true;
         }
         return false;
+    }
+
+    /* 一次站点线路表区域检索；首遍与远端补查共用，结果写回站点线路后回调 */
+    function areaLookup(n0, label, cb) {
+        areaUsed++;
+        calls++;
+        report(label);
+        var ps = new AMap.PlaceSearch({ type: '150500', pageSize: 25, pageIndex: 1, extensions: 'all' });
+        amapRequest('站点线路', {
+            run: function (c2) { ps.searchNearBy('', [n0.lng, n0.lat], TP_AREA_RADIUS, c2); },
+            isSuccess: function (s, r) { return s === 'complete' && !!(r && r.poiList && r.poiList.pois); },
+            onDone: function (st, result) {
+                if (aborted()) { terminate(true); return; }
+                if (st === 'success') absorbPois(result.poiList.pois);
+                areaCenters.push({ lng: n0.lng, lat: n0.lat, r: TP_AREA_RADIUS });
+                n0.known = true;
+                n0.areaTried = true;
+                cb();
+            }
+        });
     }
 
     /* 城市以起点附近站点 POI 的 cityname 为准（比启动期 getCity/逆地理可靠）：
@@ -1788,29 +1811,12 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (!node.known) {
                 // 只有地铁站值得再查一次线路表（换乘骨架）；公交站只扩已由 POI 给出的线路，
                 // 否则每坐一条公交线就会带出几十个待查站，配额瞬间打满。
-                if (node.kind !== 'metro' || areaUsed >= areaCap || areaCovered(node)) {
+                if (node.kind !== 'metro' || areaUsed >= firstAreaCap || areaCovered(node)) {
                     node.known = true;
                     expand(node, item.sec);
                     return;
                 }
-                areaUsed++;
-                calls++;
-                report('检索站点线路');
-                (function (n0, t0) {
-                    var ps = new AMap.PlaceSearch({ type: '150500', pageSize: 25, pageIndex: 1, extensions: 'all' });
-                    amapRequest('站点线路', {
-                        run: function (c2) { ps.searchNearBy('', [n0.lng, n0.lat], TP_AREA_RADIUS, c2); },
-                        isSuccess: function (s, r) { return s === 'complete' && !!(r && r.poiList && r.poiList.pois); },
-                        onDone: function (st, result) {
-                            if (aborted()) { terminate(true); return; }
-                            if (st === 'success') absorbPois(result.poiList.pois);
-                            areaCenters.push({ lng: n0.lng, lat: n0.lat, r: TP_AREA_RADIUS });
-                            n0.known = true;
-                            n0.areaTried = true;
-                            expand(n0, t0);
-                        }
-                    });
-                })(node, item.sec);
+                areaLookup(node, '检索站点线路', function () { expand(node, item.sec); });
                 return;
             }
             expand(node, item.sec);
@@ -1833,18 +1839,23 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
 
     /* 方案构成：1 = 全程轨道、2 = 全程公交、0 = 混合或纯步行。
      * Transfer 不能限定「只坐地铁」，混入公交的方案会比纯地铁快，不能拿来当纯地铁圈的准。 */
-    /* Transfer 乘车段的线路列表在不同版本里可能是 buslines、line 或单个对象，统一成数组 */
+    /* Transfer 乘车段的线路列表在高德 JSAPI 2.0 是 transit.lines（数组，含 name/type），
+     * 旧版可能是 buslines/line 或单个对象；线路名也有 name/line_name/busline.name 多种写法。
+     * 三处统一在这里归一，避免某处漏改导致导航复核静默失效。 */
     function navSegLines(sg) {
         var box = sg.transit || sg.bus;
-        var list = (box && (box.buslines || box.line)) || [];
+        var list = (box && (box.lines || box.buslines || box.line)) || [];
         return Array.isArray(list) ? list : (list ? [list] : []);
+    }
+    function navLineName(bl) {
+        return String(bl.name || bl.line_name || (bl.busline && bl.busline.name) || '');
     }
 
     function navPlanKind(plan) {
         var metro = false, bus = false;
         (plan.segments || []).forEach(function (sg) {
             navSegLines(sg).forEach(function (bl) {
-                var nm = String(bl.line_name || (bl.busline && bl.busline.name) || '');
+                var nm = navLineName(bl);
                 var ty = String(bl.type || '');
                 if (/地铁|轨道|磁浮|磁悬浮/.test(nm + ty)) metro = true; else bus = true;
             });
@@ -1854,19 +1865,21 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         return 0;
     }
 
-    /* 从导航方案反算逐线有效速度：乘车段给的是真实运营时间，比自己套均速可靠 */
+    /* 从导航方案反算逐线有效速度：乘车段给的是真实运营时间，比自己套均速可靠。
+     * 2.0 把 distance/time 放在 segment 上、线路项只有名字与类型；只有单线路段才
+     * 能把整段距离/用时归属给那一条线，并行线路段宁可不学。 */
     function navLearn(plan) {
         (plan.segments || []).forEach(function (sg) {
-            var segSec = Number(sg.transit_time) || 0;
             var lines = navSegLines(sg);
+            if (!lines.length) return;
+            var segDist = Number(sg.distance) || 0;
+            var segSec = Number(sg.transit_time || sg.time) || 0;
             lines.forEach(function (bl) {
-                var nm = String(bl.line_name || (bl.busline && bl.busline.name) || '');
+                var nm = navLineName(bl);
                 var ty = String(bl.type || '');
                 var mode = /地铁|轨道|磁浮|磁悬浮/.test(nm + ty) ? 'SUBWAY' : 'BUS';
-                var dist = Number(bl.distance) || 0;
-                var sec = Number(bl.time) || Number(bl.duration) || 0;
-                // 段内有并行线路时不能拿整段用时兜底，否则会把别条线的时间算到这条头上
-                if (!sec && segSec && lines.length === 1) sec = segSec;
+                var dist = Number(bl.distance) || (lines.length === 1 ? segDist : 0);
+                var sec = Number(bl.time) || Number(bl.duration) || (lines.length === 1 ? segSec : 0);
                 if (!nm || !dist || !sec) return;
                 if (tpLearnLineSpeed(cityKey, mode, nm, dist, sec)) learnedLines++;
             });
@@ -2052,10 +2065,44 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         step();
     }
 
+    /* 首遍按到达时间从小到大展开，区域预算容易在起点附近用光，远处换乘站（如龙阳路的
+     * 18 号线）永远没机会被发现。收敛后用剩余预算补查已知换乘站——单线末端站查了也没用，
+     * 而挂了多条线的站才有未发现的线路。新线路写回站点后，导航复核的第二遍松弛会
+     * 自动 expand 加载并传播到沿线各站。 */
+    function discoverRemoteTransfers(cb) {
+        var cands = [];
+        Object.keys(nodes).forEach(function (k) {
+            var n = nodes[k];
+            if (n.kind !== 'metro' || n.areaTried || areaCovered(n)) return;
+            if (!isFinite(n.best) || n.best > targetSec) return;
+            var ln = Object.keys(n.lines).length;
+            if (ln < 2) return;
+            cands.push({ key: k, sec: n.best, ln: ln });
+        });
+        cands.sort(function (a, b) { return (b.ln - a.ln) || (a.sec - b.sec); });
+        var i = 0;
+        function next() {
+            if (aborted()) { terminate(true); return; }
+            while (i < cands.length && areaUsed < areaCap) {
+                var n = nodes[cands[i++].key];
+                if (!n || n.areaTried || areaCovered(n)) continue;
+                remotePicked.push(n.name + '/' + Math.round(n.best / 60));
+                areaLookup(n, '补查换乘线路', next);
+                return;
+            }
+            cb();
+        }
+        next();
+    }
+
     function onModelConverged() {
         if (navPass === 0) {
             navPass = 1;
-            if (verifyBoundary()) return;
+            discoverRemoteTransfers(function () {
+                if (verifyBoundary()) return;
+                finish();
+            });
+            return;
         }
         finish();
     }
