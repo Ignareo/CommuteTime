@@ -1474,11 +1474,12 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var kx = 111320 * Math.cos(origin[1] * Math.PI / 180);
     var searchCity = comp.city || cityName || '';
     var cityKey = String(searchCity || '').replace(/市$/, '').trim();
-    // 步行范围内的地铁站与公交站分开检索：地铁站是骨架，必须齐全；公交站取两页足够
+    // 步行范围内的地铁站与公交站分开检索：地铁站是骨架；公交站取三页——
+    // 单页只有 25 条，起点错开百来米就会拿到不同线路集，多取一页减少这种边界抖动
     var nearRadius = Math.max(300, Math.min(1400, Math.round(targetSec * walkMs / TP_DETOUR * 0.92)));
     var nearQueries = want === 'SUBWAY' ? [{ type: '150500', pages: 1 }]
-        : (want === 'BUS' ? [{ type: '150700', pages: 2 }]
-            : [{ type: '150500', pages: 1 }, { type: '150700', pages: 2 }]);
+        : (want === 'BUS' ? [{ type: '150700', pages: 3 }]
+            : [{ type: '150500', pages: 1 }, { type: '150700', pages: 3 }]);
     var nearPois = [], nearOk = 0;
     var estMax = 0;
 
@@ -1925,17 +1926,34 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (n.best > horizonSec) return;
             out.push({ key: k, sec: n.best });
         });
-        out.sort(function (a, b) { return b.sec - a.sec; });
-        // 统一在这里按 cap 裁剪：若等候选堆到 TP_NAV_CAP_MAX 才分层抽样，
-        // 而调用方又按更小的 cap 硬切，中间区间的候选会全被截成「最远一批」，采样策略作废
         var cap = Math.min(TP_NAV_CAP_MAX, 16 + Math.round(minutes * 1.2));
         if (out.length <= cap) return out;
-        // 65% 给最远的一批（圈外沿最容易被高估），其余在各时长层等距抽样，
-        // 否则「模型 30 分钟、实际 90 分钟」这种离群站会一直躲在采样范围之外
-        var head = Math.round(cap * 0.65);
-        var picked = out.slice(0, head), rest = out.slice(head);
-        var stride = Math.max(1, Math.floor(rest.length / Math.max(1, cap - head)));
-        for (var i = 0; i < rest.length && picked.length < cap; i += stride) picked.push(rest[i]);
+        /* 按固定时间桶分层，而不是按候选排名切：相邻起点估值差一两分钟时，排名会大幅
+         * 漂移、采样到不同站点；桶边界由 horizonSec 固定，同类站仍落在同一桶，采样集合稳定。
+         * 桶数固定、远端桶名额递增（最远段最容易被高估），同时覆盖 [0, horizonSec] 全区间，
+         * 保证「模型 30 分钟、实际 90 分钟」的离群站仍在候选内。桶内按估值降序、key 兜底。 */
+        var BUCKETS = 8;
+        var buckets = [];
+        for (var b = 0; b < BUCKETS; b++) buckets.push([]);
+        out.forEach(function (x) {
+            var i = Math.min(BUCKETS - 1, Math.floor(x.sec / horizonSec * BUCKETS));
+            buckets[i].push(x);
+        });
+        var wsum = BUCKETS * (BUCKETS + 1) / 2;
+        var picked = [];
+        for (var i = 0; i < BUCKETS; i++) {
+            var quota = Math.round(cap * (i + 1) / wsum);
+            buckets[i].sort(function (a, c) {
+                return (c.sec - a.sec) || (a.key < c.key ? -1 : (a.key > c.key ? 1 : 0));
+            });
+            for (var j = 0; j < buckets[i].length && j < quota && picked.length < cap; j++) picked.push(buckets[i][j]);
+        }
+        // 某桶不足额时剩余名额补给还有站的最远桶，避免浪费导航额度
+        for (var i = BUCKETS - 1; i >= 0 && picked.length < cap; i--) {
+            for (var j = 0; j < buckets[i].length && picked.length < cap; j++) {
+                if (picked.indexOf(buckets[i][j]) < 0) picked.push(buckets[i][j]);
+            }
+        }
         return picked;
     }
 
