@@ -290,12 +290,13 @@
             <!-- <div class="hint" id="transitDataHint" style="margin-top:4px">实时模式从起点步行范围出发，按高德站点/线路检索现查线网（含新开通线路），逐站推算「上车—换乘—下车步行」可达范围；逐线速度由导航反推校准，并用导航复核边界。时长可到 120 分钟（长圈耗时明显增加），结果可缓存复用。</div> -->
             <div id="circleList"></div>
             <details style="margin-top:8px">
-                <summary>高级：批量改时长 · 刷新选中圈 · 交集差集 · 导出</summary>
+                <summary>高级：批量改时长 · 刷新选中圈 · 更换颜色 · 交集差集 · 导出</summary>
                 <div class="row" style="margin-top:6px;flex-wrap:wrap">
                     <button id="selectAllBtn" class="ghost">全选 / 全不选</button>
                     <input type="number" id="batchMinutes" min="1" max="120" placeholder="分钟" style="flex:0 0 70px">
                     <button id="retimeBtn" class="ghost">选中圈改为该时长</button>
                     <button id="refreshCirclesBtn" class="ghost" title="清除选中圈的几何缓存并按当前算法/线网重新计算（实时圈较慢、会消耗高德配额）">刷新选中圈</button>
+                    <button id="recolorCirclesBtn" class="ghost" title="随机更换选中圈的颜色（仅改显示，不重算几何）">更换选中圈颜色</button>
                 </div>
                 <div class="intersect-bar">
                     <label><input type="checkbox" id="onlyIntersect"> 只显示所选圈的交集</label>
@@ -2495,6 +2496,10 @@ function updateActionStates() {
     refreshBtn.disabled = !circles.length || anyBusy;
     refreshBtn.title = !circles.length ? '请先添加等时圈'
         : (anyBusy ? busyHint : '清除选中圈的几何缓存并按当前算法/线网重新计算，会消耗高德配额');
+    var recolorBtn = document.getElementById('recolorCirclesBtn');
+    recolorBtn.disabled = !circles.length || anyBusy;
+    recolorBtn.title = !circles.length ? '请先添加等时圈'
+        : (anyBusy ? busyHint : '随机更换选中圈的颜色，仅改显示不重算几何');
     var batchBtn = document.getElementById('batchBtn');
     batchBtn.disabled = !count || anyBusy;
     batchBtn.title = !count ? '请先检索候选地点' : (anyBusy ? busyHint : '');
@@ -2655,6 +2660,7 @@ function initApp() {
     document.getElementById('selectAllBtn').onclick = onSelectAll;
     document.getElementById('retimeBtn').onclick = onRetimeSelected;
     document.getElementById('refreshCirclesBtn').onclick = onRefreshSelected;
+    document.getElementById('recolorCirclesBtn').onclick = onRecolorSelected;
     var stationWalkInp = document.getElementById('stationWalkMax');
     if (stationWalkInp) {
         stationWalkInp.onchange = onStationWalkMaxChange;
@@ -3071,6 +3077,25 @@ function onRetimeSelected() {
     })();
 }
 
+/* 更换选中圈颜色：只改显示属性，不动几何/缓存/配额。每组随机分配互不重复的颜色，
+ * 圈数超过调色板长度时循环；原地改 overlay 样式并保存状态。 */
+function onRecolorSelected() {
+    var sels = circles.filter(function (c) { return c.visible !== false; });
+    if (!sels.length) { toast('请先勾选要换色的等时圈'); return; }
+    var pool = PALETTE.slice();
+    for (var i = pool.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+    }
+    sels.forEach(function (c, i) {
+        c.color = pool[i % pool.length];
+        c.overlays.forEach(function (o) { o.setOptions({ fillColor: c.color, strokeColor: c.color }); });
+    });
+    renderCircleList();
+    saveState();
+    toast('已随机更换 ' + sels.length + ' 个选中圈的颜色');
+}
+
 /* 刷新选中圈：按当前算法/线网重新计算。与恢复存档不同，这里刻意用「当前签名」——
  * 先删掉当前签名对应的几何缓存，再不带 geomSig 重建，命中必然 miss、走 API 重算；
  * 完成后新几何以当前签名写回缓存与 state，刷新结果可长期复用。 */
@@ -3128,14 +3153,21 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
         return;
     }
     var color = (opts && opts.color) || PALETTE[circleSeq % PALETTE.length];
+    // 实时圈快照创建时的下车后步行上限：改配置只影响新建/刷新圈，标签须显示本圈实际用的值
+    var stationWalkMax = 0;
+    if (dataMode === 'precise' && isTransitMode) {
+        stationWalkMax = (opts && opts.stationWalkMax)
+            ? (clampStationRadius(opts.stationWalkMax) || TP_STATION_RADIUS_MAX)
+            : TP_STATION_RADIUS_MAX;
+    }
     // 恢复/导入时沿用圈保存时的签名：缓存里已有该圈几何就直接装配，不因算法指纹/速度漂移而重算
     var geomSig = (opts && opts.geomSig) || circleSig(companyId, mode, minutes, precise, dataMode);
     var circle = {
         id: ++circleSeq,
         companyId: companyId,
-        label: circleLabel(comp, mode, minutes, !isTransit && !precise, precise, 0, dataMode),
+        label: circleLabel(comp, mode, minutes, !isTransit && !precise, precise, 0, dataMode, stationWalkMax),
         mode: mode, minutes: minutes, color: color, approx: !isTransit && !precise, precise: precise,
-        dataMode: dataMode,
+        dataMode: dataMode, stationWalkMax: stationWalkMax,
         geomSig: geomSig,
         polygons: [], overlays: [], visible: true, areaM2: 0
     };
@@ -3570,10 +3602,13 @@ function fmtArea(m2) {
     return Math.round(m2) + 'm²';
 }
 
-function circleLabel(comp, mode, minutes, approx, precise, areaM2, dataMode) {
+function circleLabel(comp, mode, minutes, approx, precise, areaM2, dataMode, stationWalkMax) {
     var s = comp.name + ' · ' + MODE_LABEL[mode] + ' ' + minutes + ' 分钟' + (approx ? '(近似)' : (precise ? '(路网)' : ''));
     var isTransit = (mode !== 'walk' && mode !== 'ride' && mode.indexOf('mapbox-') !== 0);
-    if (isTransit) s += (dataMode === 'precise') ? '(实时)' : '(旧数据)';
+    if (isTransit) {
+        s += (dataMode === 'precise') ? '(实时)' : '(旧数据)';
+        if (dataMode === 'precise' && stationWalkMax) s += ' · 下车后步行上限' + stationWalkMax + 'm';
+    }
     var a = fmtArea(areaM2);
     if (a) s += ' · ' + a;
     return s;
@@ -3584,7 +3619,7 @@ function refreshCircleLabel(c) {
     var comp = companies[c.companyId];
     if (!comp) return;
     c.areaM2 = circleAreaM2(c);
-    c.label = circleLabel(comp, c.mode, c.minutes, c.approx, c.precise, c.areaM2, c.dataMode);
+    c.label = circleLabel(comp, c.mode, c.minutes, c.approx, c.precise, c.areaM2, c.dataMode, c.stationWalkMax);
     renderCircleList();
 }
 
@@ -5490,7 +5525,7 @@ function buildState() {
             return {
                 id: c.id, companyId: c.companyId, mode: c.mode, minutes: c.minutes,
                 color: c.color, visible: c.visible, precise: !!c.precise,
-                dataMode: c.dataMode || '', geomSig: c.geomSig || ''
+                dataMode: c.dataMode || '', geomSig: c.geomSig || '', stationWalkMax: c.stationWalkMax || 0
             };
         })
     };
@@ -5624,6 +5659,7 @@ function applyState(state, merge) {
             existingSigs[sig] = true;
         }
         var opts = { color: c.color, dataMode: dataMode, geomSig: sig };
+        if (c.stationWalkMax) opts.stationWalkMax = c.stationWalkMax;
         if (c.precise !== undefined) opts.precise = !!c.precise;   // v2 及更早无此字段 → 沿用勾选框
         if (typeof LZString !== 'undefined' && geomCache[sig] && geomCache[sig].g) {
             // 缓存命中：本圈不发 API、纯本地解压装配，无需按 400ms 排队。
