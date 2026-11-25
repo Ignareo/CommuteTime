@@ -976,11 +976,16 @@ var TP_NAV_BIAS_DEFAULT = 1.12;
 // 第二轮：偏差系数只能给统计意义上的修正，对单个临界站可能偏严；再查一批「乘完系数刚好
 // 卡在目标附近」的站，避免把本来可达的站误伤掉
 var TP_NAV_REFINE_CAP = 120;
-// 校准样本：路径速度已校准、且按偏差上限仍深在圈内的站不改变边界，只留少量做偏差估计
-var TP_NAV_CAL_MAX = 12;
+// 校准样本：路径速度已校准、且按偏差上限仍深在圈内的站不改变边界，只留少量做偏差估计。
+// 上限别压得太小：冷启动时每条未校准线路都要一个样本，12 个名额会被高估值线路占满，
+// 45 分钟左右的「深在圈内」站（如银南大厦→友谊路）轮不到，第二遍乘系数后才暴露成临界站。
+var TP_NAV_CAL_MAX = 20;
 // 近失补查按「最后乘坐的线路」聚合，每条线最多查 2 个代表站；其余站用该线的
 // 导航/模型比值修正，避免同一条线几十个站各花一次导航请求
 var TP_NAV_REFINE_PER_LINE = 2;
+// 导航方案里出现、但线网没加载的线路：补 LineSearch 的上限。
+// 真实换乘路径已经证明「这条线能接上」，把它的站点写回线网比几何启发式可靠得多。
+var TP_MAX_NAV_LINES = 6;
 // 逐线修正因子的钳制区间（作用在乘车时间上，接驳/候车仍用全局偏差）
 var TP_LINE_BIAS_MIN = 0.7;
 var TP_LINE_BIAS_MAX = 1.6;
@@ -995,6 +1000,17 @@ var TP_BUS_QUEUE_BONUS = 240;                    // 公交站排队靠后，优�
 var TP_MAX_AREA = 40;                            // 地铁站线路表检索次数上限（首遍与远端补查各半）
 var TP_MAX_LINE_METRO = 26;                      // 地铁线路检索次数上限
 var TP_MAX_LINE_BUS = 22;                        // 公交线路检索次数上限
+// 公交站线路表补查：公交线路在中途交叉，只从起点附近取线路永远发现不了横向换乘线
+// （实测三湘海尚→宝华城市花园要 151 路换 108 路，108 路只在远端才接得上）。
+// 首遍收敛后按「单线路 + 可达且留有余量 + 离起点远」挑少量公交站补查，独立预算；
+// 预算内新发现的线路允许在第二遍超过 busCap 再加载，否则冷启动时额度早已用光。
+var TP_MAX_BUS_AREA = 8;                         // 公交站线路表补查次数上限
+var TP_BUS_AREA_RATIO = 0.8;                     // 只补模型估值 ≤ 目标 80% 的站（留出换乘乘车时间）
+var TP_BUS_AREA_MIN_M = 1800;                    // 起点附近的公交线路已由首轮检索覆盖
+// 公交补查一次覆盖一个街区：420m 只够查中心站自己的线路表，横向线路在几百米外交叉时
+// 就漏了（实测三湘海尚南侧 108 路离候选站约 1km）。公交站密度高、POI 自带线路名，
+// 放大到 1000m 用一次请求就能把整片站点的线路表一起吸收，比逐站补查更省。
+var TP_BUS_AREA_RADIUS = 1000;
 // 下车后步行盘半径上限：默认 900m，可由 config.yaml 的 station_walk_max_m 调整，
 // 但不得超过硬上限（几何栅格/圈面积会随半径平方增长，过大既失真又拖慢 marching squares）
 var TP_STATION_RADIUS_HARD_MAX = 2000;
@@ -1480,12 +1496,15 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
 
     var nodes = {}, byName = {}, grid = {};
     var routes = {}, queryState = {};
-    var areaCenters = [], remotePicked = [];
+    var areaCenters = [], remotePicked = [], busRescuePicked = [];
     var areaUsed = 0, lineMetro = 0, lineBus = 0, calls = 0, finished = false;
     var areaCap = Math.min(TP_MAX_AREA, 12 + Math.round(minutes * 0.5));
     // 首遍按到达顺序展开，预算容易在起点附近耗尽；留一半给收敛后的远端补查
     var firstAreaCap = Math.ceil(areaCap * 0.5);
     var busCap = Math.min(TP_MAX_LINE_BUS, 6 + Math.round(minutes * 0.55));
+    var busAreaUsed = 0, lineBusRescue = 0, busPhaseDone = false;
+    var busAreaCap = want === 'SUBWAY' ? 0
+        : Math.min(TP_MAX_BUS_AREA, 2 + Math.round(minutes * 0.1));
     var heap = tpMakeHeap();
     var kx = 111320 * Math.cos(origin[1] * Math.PI / 180);
     var searchCity = comp.city || cityName || '';
@@ -1506,15 +1525,27 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             origin: origin, minutes: minutes, mode: want, walkSpeed: currentWalkSpeed(),
             nearRadius: Math.round(nearRadius), pois: nearPois.length,
             nodes: Object.keys(nodes).length, calls: calls, areaUsed: areaUsed,
-            remotePicked: remotePicked,
+            remotePicked: remotePicked, busRescuePicked: busRescuePicked,
+            busArea: { used: busAreaUsed, cap: busAreaCap, lines: lineBusRescue },
             horizon: Math.round(horizonSec / 60),
             caps: { area: areaCap, metro: TP_MAX_LINE_METRO, bus: busCap, nav: navCap },
             lines: { metro: lineMetro, bus: lineBus },
             nav: {
                 calls: navCalls, hits: navHits, anchors: navAnchors, learnedLines: learnedLines,
+                calNames: navCalNames, calSkip: navCalSkip, midNames: navMidNames,
                 pruned: navPruned, cal: navCal, refineGroups: navRefineGroups,
                 refineSkipped: navRefineSkipped, farSkipped: navFarSkipped,
                 biasSamples: navBiasSamples, midAnchors: navMidAnchors,
+                extraLines: navExtraLoaded,
+                extraChecked: navExtraCheckNames,
+                lineSeen: (function () {
+                    var a = [];
+                    Object.keys(navLineSeen).forEach(function (q) {
+                        var e = navLineSeen[q];
+                        a.push(e.nm + '/' + e.mode + '/' + Math.round(e.dist / 100) / 10 + 'km/' + e.n);
+                    });
+                    return a.slice(0, 20);
+                })(),
                 lineScales: lineScalesDebug()
             }
         };
@@ -1636,19 +1667,24 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         return false;
     }
 
-    /* 一次站点线路表区域检索；首遍与远端补查共用，结果写回站点线路后回调 */
-    function areaLookup(n0, label, cb) {
-        areaUsed++;
+    /* 一次站点线路表区域检索；首遍与远端补查共用，结果写回站点线路后回调。
+     * type 缺省查地铁站；公交补线传 150700 并走独立预算——公交站太多，共用地铁额度会把它挤光。
+     * radius 可选：公交补查用一个街区的大半径，一次吸收整片站点的线路名。 */
+    function areaLookup(n0, label, cb, type, radius) {
+        var isBus = type === '150700';
+        if (isBus) busAreaUsed++; else areaUsed++;
         calls++;
         report(label);
-        var ps = new AMap.PlaceSearch({ type: '150500', pageSize: 25, pageIndex: 1, extensions: 'all' });
+        var rad = radius || TP_AREA_RADIUS;
+        var ps = new AMap.PlaceSearch({ type: type || '150500', pageSize: 25, pageIndex: 1, extensions: 'all' });
         amapRequest('站点线路', {
-            run: function (c2) { ps.searchNearBy('', [n0.lng, n0.lat], TP_AREA_RADIUS, c2); },
+            run: function (c2) { ps.searchNearBy('', [n0.lng, n0.lat], rad, c2); },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.poiList && r.poiList.pois); },
             onDone: function (st, result) {
                 if (aborted()) { terminate(true); return; }
                 if (st === 'success') absorbPois(result.poiList.pois);
-                areaCenters.push({ lng: n0.lng, lat: n0.lat, r: TP_AREA_RADIUS });
+                // 公交补查只返回公交 POI，不能当地铁站的覆盖标记，否则会挡住地铁换乘补查
+                if (!isBus) areaCenters.push({ lng: n0.lng, lat: n0.lat, r: TP_AREA_RADIUS });
                 n0.known = true;
                 n0.areaTried = true;
                 cb();
@@ -1686,6 +1722,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (g.lineNames.length) {
                     node.known = true;
                     g.lineNames.forEach(function (ln) { node.lines[lineQuery(kind, ln)] = true; });
+                    // 公交 POI 的 address 就是完整线路表，等同查过一次，别再花补查额度
+                    if (kind === 'bus') node.areaTried = true;
                 }
                 if (cityKey) tpStopCachePut(cityKey, kind, node.name, node.lng, node.lat, Object.keys(node.lines));
             });
@@ -1824,8 +1862,18 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             // 缓存命中的线路零请求，不该占线路检索额度：否则热缓存下明明有数据也用不上
             var cachedLine = !!tpLineCache.get(cityKey + '|' + q);
             if (!cachedLine) {
-                if (node.kind === 'metro' ? lineMetro >= TP_MAX_LINE_METRO : lineBus >= busCap) { next(); return; }
-                if (node.kind === 'metro') lineMetro++; else lineBus++;
+                if (node.kind === 'metro') {
+                    if (lineMetro >= TP_MAX_LINE_METRO) { next(); return; }
+                    lineMetro++;
+                } else {
+                    if (lineBus >= busCap) {
+                        // 公交补线新发现的线路走独立名额：冷启动时 busCap 常已被首轮线路用光，
+                        // 没有这条豁免，补查到的 108 路这类换乘线永远加载不了
+                        if (!busPhaseDone || lineBusRescue >= TP_MAX_BUS_AREA) { next(); return; }
+                        lineBusRescue++;
+                    }
+                    lineBus++;
+                }
                 calls++;
                 report('检索线路');
             }
@@ -1877,7 +1925,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var navRefined = false;
     // 候选剪枝 / 校准样本 / 近失分组 / 远端跳过的统计，写进 __tpDebug 便于核对预算
     var navPruned = 0, navCal = 0, navRefineGroups = 0, navRefineSkipped = 0, navFarSkipped = 0;
-    var navMidAnchors = 0;
+    var navMidAnchors = 0, navCalNames = [], navCalSkip = [], navMidNames = [];
+    // 导航方案里出现、但线网还没加载的线路：真实换乘路径就是最好的「还有哪条线」证据，
+    // 补一次 LineSearch 写回沿线站点，第二遍松弛就能沿它传播（导航学到的速度也已缓存）。
+    var navLineSeen = {}, navLineLoads = 0, navLinesDone = false, navExtraLoaded = [];
+    var navExtraKeys = {}, navExtraChecked = false, navExtraCheckNames = [];
     // 第二遍松弛统一把各项耗时乘这个系数。不能在 finish() 里对最终 time 再乘一次：
     // 那时 best 已被导航锚点重新计算过，再乘会使「已锚定 + 又被系数收紧」双重修正，
     // 临界站（例如 18 号线御桥）会被无端推出圈。
@@ -1958,7 +2010,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     }
                     if (n && kindAllowed(n.kind)) {
                         var sec = t + segSec;
-                        if (!isFinite(n.navMid) || sec < n.navMid) n.navMid = sec;
+                        if (!isFinite(n.navMid) || sec < n.navMid) {
+                            n.navMid = sec;
+                            if (navMidNames.length < 30) navMidNames.push(n.name + '/' + Math.round(sec / 60));
+                        }
                     }
                 }
             }
@@ -1987,6 +2042,93 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         });
     }
 
+    /* 记录导航方案里的未知线路。只记规划时间仍在地平线内的方案——一条只在
+     * 两小时绕路方案里出现的线，对 60 分钟圈没有意义。按累计乘车距离排序，
+     * 长区间更能影响可达范围。 */
+    function navNoteLines(plan) {
+        var pt = Number(plan.time) || 0;
+        if (!(pt > 0) || pt > horizonSec * 1.15) return;
+        (plan.segments || []).forEach(function (sg) {
+            var lines = navSegLines(sg);
+            if (!lines.length) return;
+            var segDist = Number(sg.distance) || 0;
+            var mode = navSegMode(sg) === 'metro' ? 'SUBWAY' : 'BUS';
+            if (!modeAllowed(mode)) return;
+            lines.forEach(function (bl) {
+                // 导航给的线路名带方向后缀（「地铁1号线(莘庄--富锦路)」），归一成线网里的名字，
+                // 否则会把已经在网里的线当成新线重复 LineSearch。
+                var nm = navLineName(bl).replace(/[（(][^()（）]*[)）]\s*$/, '').trim();
+                if (!nm) return;
+                var q = lineQuery(mode === 'SUBWAY' ? 'metro' : 'bus', nm);
+                if (routes[q] || queryState[q]) return;
+                var dist = Number(bl.distance) || (lines.length === 1 ? segDist : 0);
+                var e = navLineSeen[q];
+                if (!e) e = navLineSeen[q] = { nm: nm, mode: mode, dist: 0, n: 0 };
+                e.dist += dist;
+                e.n++;
+            });
+        });
+    }
+
+    /* 未知线路按累计乘车距离取前几个补查；只在导航阶段结束后执行一次。
+     * 不占首遍的地铁/公交线路额度——这是复核给出的强证据，额度单列并设小上限。 */
+    function navExtraLines() {
+        var arr = [];
+        Object.keys(navLineSeen).forEach(function (q) {
+            var e = navLineSeen[q];
+            if (!e.dist) return;
+            arr.push({ q: q, nm: e.nm, mode: e.mode, dist: e.dist, n: e.n });
+        });
+        arr.sort(function (a, b) { return b.dist - a.dist || b.n - a.n; });
+        return arr.slice(0, TP_MAX_NAV_LINES);
+    }
+
+    /* 导航补进来的新线路在第二遍里才有估值，之前没有复核机会。第二遍收敛后，
+     * 对「新线上最接近边界的站」补最后一小批导航：否则一条从未校准的线（如 3 号线）
+     * 只按全局限幅系数收紧，像友谊路这种模型 58、真实 62 的站会原样漏进圈。
+     * 每条新线最多 2 个（先圈内后圈外），总量与补线数同阶。 */
+    function navExtraCandidates() {
+        var cands = [];
+        Object.keys(nodes).forEach(function (k) {
+            var n = nodes[k];
+            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec) return;
+            if (!navExtraKeys[n.via || '']) return;
+            if (n.best > horizonSec || n.best < targetSec * 0.82) return;
+            cands.push({ key: k, sec: n.best });
+        });
+        cands.sort(function (a, b) { return Math.abs(a.sec - targetSec) - Math.abs(b.sec - targetSec); });
+        var per = {}, out = [];
+        cands.forEach(function (x) {
+            var v = nodes[x.key].via || '';
+            if ((per[v] || 0) >= 2) return;
+            per[v] = (per[v] || 0) + 1;
+            out.push(x);
+        });
+        return out.slice(0, TP_MAX_NAV_LINES);
+    }
+
+    function loadNavLines(list, cb) {
+        var i = 0;
+        function next() {
+            if (aborted()) { terminate(true); return; }
+            if (i >= list.length) { cb(); return; }
+            var x = list[i++];
+            if (routes[x.q] || queryState[x.q]) { next(); return; }
+            navLineLoads++;
+            calls++;
+            report('补查导航线路');
+            navExtraLoaded.push(x.nm + '/' + (Math.round(x.dist / 100) / 10) + 'km');
+            navExtraKeys[x.q] = 1;
+            loadLineVariants(x.q, function (variants) {
+                if (!variants || !variants.length) { queryState[x.q] = 'failed'; next(); return; }
+                queryState[x.q] = 'done';
+                buildRoutes(x.q, variants);
+                next();
+            });
+        }
+        next();
+    }
+
     function navSearch(node, cb) {
         // 公交圈用 NO_SUBWAY，保证导航给的也是「只坐公交」的时间；常量取不到时退回字面值
         var policy = want === 'BUS'
@@ -2008,6 +2150,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     var ok = want === 'SUBWAY' ? kind === 1 : (want === 'BUS' ? kind === 2 : true);
                     if (ok && sec < bestSec) { bestSec = sec; bestKind = kind; bestPlan = p; }
                     navLearn(p);
+                    navNoteLines(p);
                 });
                 if (bestSec === Infinity) { cb(null, 0); return; }
                 navPlanStops(bestPlan);
@@ -2059,6 +2202,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (!v || seen[v] || trust.lines[v]) return;
             seen[v] = 1;
             cal.push(x);
+            navCalNames.push('C:' + nodes[x.key].name + '/' + Math.round(x.sec / 60) + '/' + v);
         });
         if (trust.n < 6) {
             var calKey = {};
@@ -2069,10 +2213,37 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 cal.push(certain[i]);
             }
         }
+        /* 边界池里的「未校准线路」同样是高价值样本：某条线还没有单线样本时，它的
+         * 真实速度只能靠这条线的导航方案反算。优先查圈内最接近目标的站——导航一旦
+         * 更慢就直接改变边界（如银南大厦→友谊路，模型 59、导航 62）；圈内没有才退到
+         * 圈外最近的一个。每条未校准线路只取一个，避免同线重复。 */
+        var boundaryCal = [];
+        if (cal.length < calMax) {
+            var inside = [], outside = [];
+            boundary.forEach(function (x) { (x.sec <= targetSec ? inside : outside).push(x); });
+            inside.sort(function (a, c) { return c.sec - a.sec; });
+            outside.sort(function (a, c) { return a.sec - c.sec; });
+            inside.concat(outside).forEach(function (x) {
+                if (cal.length + boundaryCal.length >= calMax) return;
+                var v = nodes[x.key].via || '';
+                if (!v || seen[v] || trust.lines[v]) {
+                    if (navCalSkip.length < 16) navCalSkip.push(nodes[x.key].name + '/' + Math.round(x.sec / 60) + '/' + (v || '-') + '/' + (seen[v] || trust.lines[v] ? 'dup' : 'novia'));
+                    return;
+                }
+                seen[v] = 1;
+                boundaryCal.push(x);
+                navCalNames.push('B:' + nodes[x.key].name + '/' + Math.round(x.sec / 60) + '/' + v);
+            });
+        }
+        if (boundaryCal.length) {
+            var bKey = {};
+            boundaryCal.forEach(function (x) { bKey[x.key] = 1; });
+            boundary = boundary.filter(function (x) { return !bKey[x.key]; });
+        }
         navPruned = certain.length - cal.length;
-        navCal = cal.length;
-        var budget = Math.max(0, cap - cal.length);
-        if (boundary.length <= budget) return { main: cal.concat(boundary), far: [] };
+        navCal = cal.length + boundaryCal.length;
+        var budget = Math.max(0, cap - navCal);
+        if (boundary.length <= budget) return { main: cal.concat(boundaryCal, boundary), far: [] };
         /* 按固定时间桶分层，而不是按候选排名切：相邻起点估值差一两分钟时，排名会大幅
          * 漂移、采样到不同站点；桶边界由 horizonSec 固定，同类站仍落在同一桶，采样集合稳定。
          * 桶数固定、远端桶名额递增（最远段最容易被高估），同时覆盖 (0, horizonSec] 全区间，
@@ -2107,7 +2278,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (picked.indexOf(buckets[i][j]) < 0) picked.push(buckets[i][j]);
             }
         }
-        return { main: cal.concat(picked), far: far };
+        return { main: cal.concat(boundaryCal, picked), far: far };
     }
 
     /* 先把起点网格内已有的导航缓存灌进节点：缓存里的站即使没进采样名额，也能当锚点、
@@ -2325,6 +2496,17 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function afterNav() {
         tpPersistSpeeds();
         computeNavBias();
+        /* 先补导航方案证明存在的未知线路，再谈近失与第二遍：新线路的站点还没有估值，
+         * 必须等第二遍展开后才能参与边界判断；放在这里也让近失分组看到它们。 */
+        if (!navLinesDone) {
+            navLinesDone = true;
+            var extra = navExtraLines();
+            if (extra.length) {
+                estMax = Math.max(estMax, calls + extra.length + 1);
+                loadNavLines(extra, afterNav);
+                return;
+            }
+        }
         if (!navRefined) {
             navRefined = true;
             // 近失分组的估值口径要和第二遍一致（接驳×navBias、乘车×逐线因子），
@@ -2375,6 +2557,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
      * 而挂了多条线的站才有未发现的线路。新线路写回站点后，导航复核的第二遍松弛会
      * 自动 expand 加载并传播到沿线各站。 */
     function discoverRemoteTransfers(cb) {
+        if (busPhaseDone) { cb(); return; }
+        busPhaseDone = true;
         var cands = [];
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
@@ -2395,19 +2579,87 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 areaLookup(n, '补查换乘线路', next);
                 return;
             }
-            cb();
+            busNext();
+        }
+        /* 公交补线只在「可达、还剩足够乘车时间、离起点足够远」的单线站做：
+         * 起点附近的线路首轮已全部载入，远端单线站才是横向换乘线的接入点。
+         * 按方位分 8 个扇区、每区取最远的一个候选：公交线网是全向的，单纯按距离取最远
+         * 的 8 个会全落在同一条快速走廊上（实测 8 次全在虹口/杨浦），西北方向的换乘断点
+         * 永远轮不到。补查半径放大到 1000m 后，一次会吸收整片站点（并标记 areaTried），
+         * 所以每轮重新挑当前最远的未查站，而不是先固定一张名单。 */
+        var busSectors = {};
+        function busNext() {
+            if (aborted()) { terminate(true); return; }
+            if (want === 'SUBWAY' || busAreaUsed >= busAreaCap) { cb(); return; }
+            var pick = null;
+            Object.keys(nodes).forEach(function (k) {
+                var n = nodes[k];
+                if (n.kind !== 'bus' || n.areaTried) return;
+                if (!isFinite(n.best) || n.best > targetSec * TP_BUS_AREA_RATIO) return;
+                if (Object.keys(n.lines).length > 1) return;
+                var d = tpDist(origin, [n.lng, n.lat]);
+                if (d < TP_BUS_AREA_MIN_M) return;
+                var ang = Math.atan2(n.lat - origin[1], n.lng - origin[0]);
+                if (ang < 0) ang += Math.PI * 2;
+                var si = Math.min(7, Math.floor(ang / (Math.PI * 2) * 8));
+                if (busSectors[si]) return;
+                // 同扇区取最远：优先摸到首遍展开不到的外围走廊
+                if (!pick || d > pick.dist) pick = { key: k, sec: n.best, dist: d, si: si };
+            });
+            if (!pick) { cb(); return; }
+            busSectors[pick.si] = 1;
+            var n = nodes[pick.key];
+            busRescuePicked.push(n.name + '/' + Math.round(n.best / 60) + '/' + (Math.round(pick.dist / 100) / 10) + 'km');
+            areaLookup(n, '补查公交线路', busNext, '150700', TP_BUS_AREA_RADIUS);
         }
         next();
     }
 
+    function startNavPhase() {
+        navPass = 1;
+        discoverRemoteTransfers(function () {
+            if (verifyBoundary()) return;
+            finish();
+        });
+    }
     function onModelConverged() {
         if (navPass === 0) {
-            navPass = 1;
-            discoverRemoteTransfers(function () {
-                if (verifyBoundary()) return;
-                finish();
-            });
+            /* 首遍收敛后先补查换乘线路（地铁 + 少量公交）。公交补查会写回新线路，
+             * 必须清空 best 用内存线网重跑一遍，新线路才能真正参与松弛；没有补到
+             * 新线路就直接进入导航复核，不额外跑空遍。 */
+            if (!busPhaseDone) {
+                discoverRemoteTransfers(function () {
+                    if (busRescuePicked.length) {
+                        Object.keys(nodes).forEach(function (k) { nodes[k].best = Infinity; });
+                        heap = tpMakeHeap();
+                        seedNodes();
+                        step();
+                        return;
+                    }
+                    startNavPhase();
+                });
+                return;
+            }
+            startNavPhase();
             return;
+        }
+        /* 第二遍（含新补线路）收敛后，再核一小批新线临界站；核完 afterNav 会再跑一遍，
+         * navExtraChecked 保证只追加这一轮，不会来回震荡。 */
+        if (!navExtraChecked && navLineLoads > 0) {
+            navExtraChecked = true;
+            var extraCands = navExtraCandidates();
+            if (extraCands.length) {
+                extraCands.forEach(function (x) {
+                    navExtraCheckNames.push(nodes[x.key].name + '/' + Math.round(x.sec / 60));
+                });
+                navCap += extraCands.length;
+                navQueue = extraCands;
+                navIdx = 0;
+                navPass = 3;
+                estMax = Math.max(estMax, calls + extraCands.length + 1);
+                pumpNav();
+                return;
+            }
         }
         finish();
     }
@@ -2447,6 +2699,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             stList.push({
                 name: n.name, kind: n.kind, lng: n.lng, lat: n.lat, arrival: arr,
                 lines: Object.keys(n.lines).length, areaTried: n.areaTried, nav: trusted,
+                via: n.via || '', lineCount: n.lineCount || 0, sure: n.sure !== false,
+                navMid: n.navMid,
                 radius: Math.max(TP_STATION_RADIUS_MIN,
                     Math.min(TP_STATION_RADIUS_MAX, remain * walkMs / TP_DETOUR))
             });
@@ -2494,7 +2748,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             stations: stList.map(function (s) {
                 return {
                     name: s.name, kind: s.kind, min: Math.round(s.arrival / 60),
-                    r: Math.round(s.radius), ln: s.lines, nav: s.nav ? 1 : 0
+                    r: Math.round(s.radius), ln: s.lines, nav: s.nav ? 1 : 0,
+                    lng: Math.round(s.lng * 1e5) / 1e5, lat: Math.round(s.lat * 1e5) / 1e5,
+                    via: s.via || '', lc: s.lineCount || 0, sure: s.sure ? 1 : 0,
+                    mid: isFinite(s.navMid) ? Math.round(s.navMid / 60) : null
                 };
             })
         });
@@ -3230,6 +3487,7 @@ function tpAlgoSig() {
     var src = String(buildTransitPreciseRing) + '|' + String(tpMakeHeap) + '|' +
         TP_NAV_CAP_MAX + '|' + TP_NAV_REFINE_CAP + '|' + TP_NAV_CAL_MAX + '|' +
         TP_NAV_REFINE_PER_LINE + '|' + TP_LINE_BIAS_MIN + '|' + TP_LINE_BIAS_MAX + '|' +
+        TP_MAX_NAV_LINES + '|' + TP_MAX_BUS_AREA + '|' + TP_BUS_AREA_RATIO + '|' + TP_BUS_AREA_RADIUS + '|' +
         TP_NAV_BIAS_MAX + '|' + TP_HORIZON_RATIO + '|' + TP_SPEED.SUBWAY + '|' + TP_SPEED.BUS;
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
