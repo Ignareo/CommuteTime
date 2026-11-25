@@ -731,11 +731,29 @@ function amapRequest(label, opts) {
     var throwRetries = 0;    // run() 同步抛异常的重试次数
     function issue() {
         setTimeout(function () {
+            var settled = false, timer = null;
+            function once(status, result) {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                done(status, result);
+            }
+            /* JSAPI 在每日配额耗尽或网络中断时可能永远不回调：没有兜底会把整个建圈
+             * 卡在「检索站点线路 39/1100」，用户只能取消。15s 视为失败交给调用方处理。 */
+            timer = setTimeout(function () { once('error', { info: 'TIMEOUT' }); }, 15000);
             try {
-                opts.run(done);
+                opts.run(once);
             } catch (e) {
-                if (throwRetries < 2) { throwRetries++; setTimeout(issue, 600); return; }
-                done('error', { info: String(e && e.message || e) });
+                // 重试前先把本次作废并清掉超时器，否则旧计时器会在重试期间误判 TIMEOUT
+                if (settled) return;
+                if (throwRetries < 2) {
+                    throwRetries++;
+                    settled = true;
+                    if (timer) clearTimeout(timer);
+                    setTimeout(issue, 600);
+                    return;
+                }
+                once('error', { info: String(e && e.message || e) });
             }
         }, apiThrottleWait());
     }
@@ -981,6 +999,10 @@ var TP_NAV_CAP_MAX = 100;
 var TP_NAV_BIAS_MIN = 0.9;
 var TP_NAV_BIAS_MAX = 1.6;
 var TP_NAV_BIAS_DEFAULT = 1.12;
+/* 远端桶（校准后估值已超目标）的保留余量：1.15 倍以内仍查。逐线因子是乘车段加权平均，
+ * 掩盖个体差异——18 号线整体 1.003、模型对御桥多估 8 分钟（实际正好 60），按平均系数
+ * 剪掉就整站漏掉。超 15% 的站才认为没有翻进圈的可能。 */
+var TP_NAV_FAR_MARGIN = 1.15;
 // 第二轮：偏差系数只能给统计意义上的修正，对单个临界站可能偏严；再查一批「乘完系数刚好
 // 卡在目标附近」的站，避免把本来可达的站误伤掉
 var TP_NAV_REFINE_CAP = 120;
@@ -1003,7 +1025,7 @@ var TP_NAV_MID_REFINE_MAX = 6;
 var TP_NAV_UNCAL_REFINE_MAX = 6;
 // 导航方案里出现、但线网没加载的线路：补 LineSearch 的上限。
 // 真实换乘路径已经证明「这条线能接上」，把它的站点写回线网比几何启发式可靠得多。
-var TP_MAX_NAV_LINES = 6;
+var TP_MAX_NAV_LINES = 8;
 // 逐线修正因子的钳制区间（作用在乘车时间上，接驳/候车仍用全局偏差）
 var TP_LINE_BIAS_MIN = 0.7;
 var TP_LINE_BIAS_MAX = 1.6;
@@ -1015,14 +1037,17 @@ var TP_BUS_QUEUE_BONUS = 240;                    // 公交站排队靠后，优�
 // 避免「每坐一条公交线就多出几十个待查站」的指数膨胀。上限随目标时长缩放，
 // 短圈少打请求，长圈才放宽（60 分钟约 90 次调用）。已查到站序的线路会直接写回
 // 沿途站点，所以这笔预算只需要用来发现「新线路」，不必为已知线路的换乘再付一次。
-var TP_MAX_AREA = 28;                            // 地铁站线路表检索次数上限（首遍与远端补查各半）
+var TP_MAX_AREA = 28;                            // 站点线路表检索次数上限（首遍与远端补查各半）
+/* 地铁圈再压一档：编号线路已由缺口补查全量拿到，区域检索只为「磁浮/浦江线」这类
+ * 非编号线服务，不必按综合圈的量撒网。省下的是最紧的「搜索服务」配额。 */
+var TP_MAX_AREA_METRO = 16;
 var TP_MAX_LINE_METRO = 26;                      // 地铁线路检索次数上限
 var TP_MAX_LINE_BUS = 22;                        // 公交线路检索次数上限
 /* 地铁线路名可按编号枚举：区域检索再怎么撒也可能整条线一次都不出现（实测 60 分钟圈
  * 漏掉 15 号线，双柏路因此根本不在节点表里，圈再怎么调都覆盖不到）。缺哪号就补查哪号，
  * 一次 LineSearch 拿到整条线站序，比盲查区域便宜得多；沿途换乘站直接写回已知线路，
  * 第二遍松弛就能传播过去。 */
-var TP_MAX_METRO_GAPS = 6;                       // 编号缺口补线上限（每条 1 次 LineSearch）
+var TP_MAX_METRO_GAPS = 10;                      // 编号缺口补线上限（每条 1 次 LineSearch，缓存命中不耗）
 // 公交站线路表补查：公交线路在中途交叉，只从起点附近取线路永远发现不了横向换乘线
 // （实测三湘海尚→宝华城市花园要 151 路换 108 路，108 路只在远端才接得上）。
 // 首遍收敛后按「单线路 + 可达且留有余量 + 离起点远」挑少量公交站补查，独立预算；
@@ -1152,6 +1177,15 @@ function tpMakeLzCache(storageKey, maxEntries, ttl, label) {
     };
 }
 var tpLineCache = tpMakeLzCache('house_tool_transit_line_cache', 160, 30 * 24 * 3600 * 1000, '线路站序');
+
+/* ---------- 城市级地铁线号上限 ----------
+ * 编号缺口补查靠「已加载线路的最大编号」推缺口，但最坏情况是「最大那条线本身没加载」：
+ * 首遍只到 14 号线时就永远补不到 15/18。没有缓存时向外多探 6 个编号，探到哪写下来，
+ * 30 天内不再盲试不存在的线（19/20 这类），也保证每圈都能补齐已知最大编号内的空号。 */
+var TP_METRO_MAX_KEY = 'house_tool_metro_max';
+var TP_METRO_MAX_TTL = 30 * 24 * 3600 * 1000;
+var tpMetroMax = loadJson(TP_METRO_MAX_KEY, {});
+if (!tpMetroMax || typeof tpMetroMax !== 'object') tpMetroMax = {};
 
 /* ---------- 逐线速度表（导航反算，跨会话复用） ----------
  * 键 = 城市|SUBWAY|18号线，值 = {d: 累计米, t: 累计秒, n: 样本数, ts: 时间戳}。
@@ -1619,7 +1653,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var routes = {}, queryState = {};
     var areaCenters = [], remotePicked = [], busRescuePicked = [];
     var areaUsed = 0, lineMetro = 0, lineBus = 0, calls = 0, finished = false;
-    var areaCap = Math.min(TP_MAX_AREA, 12 + Math.round(minutes * 0.5));
+    var areaMax = want === 'SUBWAY' ? TP_MAX_AREA_METRO : TP_MAX_AREA;
+    var areaCap = Math.min(areaMax, 12 + Math.round(minutes * 0.5));
     // 首遍按到达顺序展开，预算容易在起点附近耗尽；留一半给收敛后的远端补查
     var firstAreaCap = Math.ceil(areaCap * 0.5);
     var busCap = Math.min(TP_MAX_LINE_BUS, 6 + Math.round(minutes * 0.55));
@@ -1630,13 +1665,14 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var kx = 111320 * Math.cos(origin[1] * Math.PI / 180);
     var searchCity = comp.city || cityName || '';
     var cityKey = String(searchCity || '').replace(/市$/, '').trim();
-    // 步行范围内的地铁站与公交站分开检索：地铁站是骨架；公交站取三页——
-    // 单页只有 25 条，起点错开百来米就会拿到不同线路集，多取一页减少这种边界抖动
+    // 步行范围内的地铁站与公交站分开检索：地铁站是骨架；公交站最多取四页——
+    // 单页只有 25 条，起点错开百来米就会拿到不同线路集；实际翻不翻页由「满页 + 本页
+    // 带出新线路」动态决定（实测市区 1.4km 内 70 个公交站要 3 页，第 4 页才空）。
     var nearRadius = Math.max(300, Math.min(1400, Math.round(targetSec * walkMs / TP_DETOUR * 0.92)));
     var nearQueries = want === 'SUBWAY' ? [{ type: '150500', pages: 1 }]
-        : (want === 'BUS' ? [{ type: '150700', pages: 3 }]
-            : [{ type: '150500', pages: 1 }, { type: '150700', pages: 3 }]);
-    var nearPois = [], nearOk = 0;
+        : (want === 'BUS' ? [{ type: '150700', pages: 4 }]
+            : [{ type: '150500', pages: 1 }, { type: '150700', pages: 4 }]);
+    var nearPois = [], nearOk = 0, nearLineSeen = {}, nearStationSeen = {}, nearPages = 0;
     var estMax = 0;
 
     function aborted() { return !!(ctrl && ctrl.aborted); }
@@ -1644,7 +1680,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function debugInfo(extra) {
         var info = {
             origin: origin, minutes: minutes, mode: want, walkSpeed: currentWalkSpeed(),
-            nearRadius: Math.round(nearRadius), pois: nearPois.length,
+            nearRadius: Math.round(nearRadius), pois: nearPois.length, nearPages: nearPages,
             nodes: Object.keys(nodes).length, calls: calls, areaUsed: areaUsed,
             remotePicked: remotePicked, busRescuePicked: busRescuePicked,
             busArea: { used: busAreaUsed, cap: busAreaCap, lines: lineBusRescue },
@@ -1710,7 +1746,9 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function report(text) {
         if (!onProgress) return;
         // 预估总量只增不减：堆大小随松弛波动，若跟着算进度条会来回跳
-        estMax = Math.max(estMax, calls + Math.round(heap.size() * 0.7) + 1, calls + 1);
+        /* 进度估算：堆里是所有已注册站点（含补进来的整条线路），与实际请求数不是线性关系，
+         * 0.7 的系数在补完 15~20 号线后会估成上千次、进度条长时间停在个位数。 */
+        estMax = Math.max(estMax, calls + Math.min(300, Math.round(heap.size() * 0.06)) + 1, calls + 1);
         onProgress(calls, estMax, text || '探测公交走廊');
     }
 
@@ -1804,6 +1842,18 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         return false;
     }
 
+    /* 查询半径内是否还有没查过线路表的地铁站：有就不能靠「零产出」放大覆盖，
+     * 否则这些站的换乘线路会被一起跳过去。 */
+    function hasUnknownMetroNear(center, r2) {
+        var found = false;
+        Object.keys(nodes).forEach(function (k) {
+            var n = nodes[k];
+            if (found || n.kind !== 'metro' || n.known) return;
+            if (tpDist(center, [n.lng, n.lat]) <= r2) found = true;
+        });
+        return found;
+    }
+
     /* 一次站点线路表区域检索；首遍与远端补查共用，结果写回站点线路后回调。
      * type 缺省查地铁站；公交补线传 150700 并走独立预算——公交站太多，共用地铁额度会把它挤光。
      * radius 可选：公交补查用一个街区的大半径，一次吸收整片站点的线路名。 */
@@ -1820,7 +1870,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             onDone: function (st, result) {
                 if (aborted()) { terminate(true); return; }
                 var pois = (st === 'success' && result.poiList && result.poiList.pois) || [];
-                if (pois.length) absorbPois(pois);
+                var fresh = pois.length ? absorbPois(pois) : 0;
                 /* 覆盖半径按实际返回的最后一条 POI 距离算：结果按距离排序，前 N 条就覆盖到
                  * 第 N 条；没触到 pageSize 上限时最远一条之外已无站点。若直接写查询半径，
                  * 420m 只回 8 条出入口的那次也会被当成「1200m 已查」，后续中心全被跳过。 */
@@ -1835,6 +1885,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     var cover = (pois.length >= TP_AREA_PAGE)
                         ? last * 0.7
                         : last + TP_AREA_COVER_PAD;
+                    /* 这一片没带出任何新线路，说明线路表在这里已经饱和：放大覆盖半径，
+                     * 省掉相邻中心的重复查询。前提是范围内已没有线路表未知的地铁站。 */
+                    if (!fresh && !hasUnknownMetroNear([n0.lng, n0.lat], rad)) {
+                        cover = Math.max(cover, Math.min(rad, rad * 0.85));
+                    }
                     areaCenters.push({
                         lng: n0.lng, lat: n0.lat,
                         r: Math.max(TP_AREA_COVER_MIN, Math.min(rad, cover))
@@ -1860,9 +1915,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         return false;
     }
 
-    /* PlaceSearch 结果并入站点表：站点 POI 的 address 即途经线路名 */
+    /* PlaceSearch 结果并入站点表：站点 POI 的 address 即途经线路名。
+     * 返回「带出了几条还没加载、也没查过的线路」——区域检索靠它判断这片区是否还有新信息。 */
     function absorbPois(pois) {
-        if (!pois || !pois.length) return;
+        if (!pois || !pois.length) return 0;
+        var fresh = 0;
         var byKind = { bus: [], metro: [] };
         pois.forEach(function (p) {
             if (!p || !p.location) return;
@@ -1876,13 +1933,18 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (!node) return;
                 if (g.lineNames.length) {
                     node.known = true;
-                    g.lineNames.forEach(function (ln) { node.lines[lineQuery(kind, ln)] = true; });
+                    g.lineNames.forEach(function (ln) {
+                        var q = lineQuery(kind, ln);
+                        if (q && !routes[q] && !queryState[q]) fresh++;
+                        node.lines[q] = true;
+                    });
                     // 公交 POI 的 address 就是完整线路表，等同查过一次，别再花补查额度
                     if (kind === 'bus') node.areaTried = true;
                 }
                 if (cityKey) tpStopCachePut(cityKey, kind, node.name, node.lng, node.lat, Object.keys(node.lines));
             });
         });
+        return fresh;
     }
 
     function lineQuery(kind, name) {
@@ -2630,7 +2692,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                             var base = biasFor(n.kind);
                             var scale = (n.via && lineScales[n.via]) || base;
                             var est = Math.max(0, n.best - ride) * base + ride * scale;
-                            return est <= targetSec ||
+                            /* 超目标 15% 以内仍查：线级因子是乘车段的加权平均，掩盖个体差异
+                             * ——18 号线整体 1.003、模型对御桥却多估了 8 分钟（实际正好 60），
+                             * 按平均系数剪掉就整站漏掉。再远的站才真的没有翻进圈的可能。 */
+                            return est <= targetSec * TP_NAV_FAR_MARGIN ||
                                 !!(n.via && !st.lines[n.via] && (n.lineCount || 0) <= 1);
                         });
                         navFarSkipped += far.length - keep.length;
@@ -3035,10 +3100,17 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     }
 
     /* 地铁线路按编号补缺：区域检索再怎么撒也可能整条线一次都不出现（60 分钟圈实测漏掉
-     * 15 号线，双柏路因此根本不在节点表里，圈怎么调都覆盖不到）。已加载线路名里的最大
-     * 编号以内的空号就是候选，每个空号一次 LineSearch，命中缓存的不占请求；补到的线路会
-     * 把沿途站点写回（`addLineTo`），换乘站天然与已加载线路接通，清空重跑就能延伸过去。 */
+     * 15 号线，双柏路因此根本不在节点表里，圈怎么调都覆盖不到）。已加载线路名里的空号就是
+     * 候选，每个空号一次 LineSearch，命中缓存的不占请求；补到的线路会把沿途站点写回
+     * （`addLineTo`），换乘站天然与已加载线路接通，清空重跑就能延伸过去。
+     * 上限不能只看已加载的最大编号——首遍只到 14 号线时 15/18 号永远补不到，所以没有
+     * 城市级上限缓存时向外多探几个编号，探到哪儿缓存下来（见 tpMetroMax）。 */
     var gapDone = false, gapTried = [], gapLoaded = [];
+    function metroMaxCached() {
+        var e = tpMetroMax[cityKey];
+        if (e && e.n > 0 && Date.now() - (e.t || 0) < TP_METRO_MAX_TTL) return e.n;
+        return 0;
+    }
     function metroGapQueries() {
         var seen = {}, maxN = 0, pcount = {}, prefix = '';
         Object.keys(routes).concat(Object.keys(queryState)).forEach(function (q) {
@@ -3053,23 +3125,38 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         // 命名前缀按已加载线路里出现最多的那个（上海/北京「地铁」、重庆「轨道交通」）
         Object.keys(pcount).forEach(function (p) { if (!prefix || pcount[p] > pcount[prefix]) prefix = p; });
         if (!prefix || !maxN) return [];
+        var cachedMax = metroMaxCached();
+        var scanMax = cachedMax > 0 ? Math.max(cachedMax, maxN) : (maxN + 6);
         var out = [];
-        for (var i = 1; i <= maxN && out.length < TP_MAX_METRO_GAPS; i++) {
+        for (var i = 1; i <= scanMax && out.length < TP_MAX_METRO_GAPS; i++) {
             if (!seen[i]) out.push(prefix + i + '号线');
         }
         return out;
+    }
+    /* 把本轮已加载的最大编号记到城市缓存：之后各圈只补到这儿，不再盲试更大的不存在的线 */
+    function noteMetroMax() {
+        var top = 0;
+        Object.keys(routes).forEach(function (q) {
+            var m = /^(地铁|轨道交通|轨道)(\d+)号线/.exec(q);
+            if (m) top = Math.max(top, parseInt(m[2], 10) || 0);
+        });
+        if (!(top > 0)) return;
+        var e = tpMetroMax[cityKey];
+        if (e && e.n >= top) e.t = Date.now();
+        else tpMetroMax[cityKey] = { n: top, t: Date.now() };
+        saveJson(TP_METRO_MAX_KEY, tpMetroMax);
     }
     function rescueMetroGaps(cb) {
         if (gapDone) { cb(false); return; }
         gapDone = true;
         if (want === 'BUS' || !modeAllowed('SUBWAY')) { cb(false); return; }
         var list = metroGapQueries();
-        if (!list.length) { cb(false); return; }
+        if (!list.length) { noteMetroMax(); cb(false); return; }
         estMax = Math.max(estMax, calls + list.length);
         var i = 0;
         function next() {
             if (aborted()) { terminate(true); return; }
-            if (i >= list.length) { cb(gapLoaded.length > 0); return; }
+            if (i >= list.length) { noteMetroMax(); cb(gapLoaded.length > 0); return; }
             var q = list[i++];
             gapTried.push(q);
             loadLineVariants(q, function (variants) {
@@ -3244,11 +3331,39 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         });
     }
 
+    /* 本页带来多少条「没见过」的线路名 / 站名。公交线路在市区高度重叠，一页 25 条里
+     * 可能全是同几条线的不同站点；这种页翻下去只是重复站点，不值得再花一次搜索配额。
+     * 但必须「线路和站名都没有新增」才敢停——只按线路判断会漏掉「某条已知线路在远端
+     * 还有新站点」的情况（新站点可能带出别的换乘线）。 */
+    function noteNearLines(list) {
+        var fresh = 0;
+        (list || []).forEach(function (p) {
+            splitStationLines(p && p.address).forEach(function (ln) {
+                var k = String(ln).replace(/\s+/g, '');
+                if (!k || nearLineSeen[k]) return;
+                nearLineSeen[k] = 1;
+                fresh++;
+            });
+        });
+        return fresh;
+    }
+    function noteNearStations(list, type) {
+        var fresh = 0;
+        (list || []).forEach(function (p) {
+            var k = type + '|' + String((p && p.name) || '').replace(/\s+/g, '');
+            if (k === type + '|' || nearStationSeen[k]) return;
+            nearStationSeen[k] = 1;
+            fresh++;
+        });
+        return fresh;
+    }
+
     // 先地铁后公交，逐页取；任一查询失败也继续下一个，避免一处失败整圈作废
     function fetchNear(qi, page) {
         if (qi >= nearQueries.length) { startExpansion(); return; }
         var q = nearQueries[qi];
         calls++;
+        nearPages++;
         var ps = new AMap.PlaceSearch({ type: q.type, pageSize: 25, pageIndex: page, extensions: 'all' });
         amapRequest('附近站点', {
             run: function (cb) { ps.searchNearBy('', origin, nearRadius, cb); },
@@ -3258,7 +3373,14 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 var list = st === 'success' ? ((result.poiList && result.poiList.pois) || []) : [];
                 if (st === 'success') nearOk++;
                 nearPois = nearPois.concat(list);
-                if (list.length >= 25 && page < q.pages) { fetchNear(qi, page + 1); return; }
+                var fresh = st === 'success' ? noteNearLines(list) : 0;
+                var freshSt = st === 'success' ? noteNearStations(list, q.type) : 0;
+                /* 翻页判据：满页（还有更多）且未到上限；公交再要求本页确实带出新线路或
+                 * 新站名（两者都没有说明这页纯属重复）。地铁站固定单页（地铁站少，
+                 * 多页只会翻出入口）。 */
+                var more = list.length >= 25 && page < q.pages &&
+                    (q.type === '150500' ? false : (fresh > 0 || freshSt > 0));
+                if (more) { fetchNear(qi, page + 1); return; }
                 fetchNear(qi + 1, 1);
             }
         });
@@ -3972,8 +4094,9 @@ function tpAlgoSig() {
         TP_NAV_REFINE_PER_LINE + '|' + TP_LINE_BIAS_MIN + '|' + TP_LINE_BIAS_MAX + '|' +
         TP_MAX_NAV_LINES + '|' + TP_MAX_BUS_AREA + '|' + TP_BUS_AREA_RATIO + '|' + TP_BUS_AREA_RADIUS + '|' +
         TP_NAV_REFINE_HUB_MAX + '|' + TP_NAV_MID_REFINE_MAX + '|' + TP_NAV_UNCAL_REFINE_MAX + '|' +
-        TP_MAX_AREA + '|' + TP_AREA_RADIUS + '|' + TP_AREA_PAGE + '|' + TP_AREA_COVER_MIN + '|' +
-        TP_AREA_COVER_PAD + '|' + TP_MAX_METRO_GAPS + '|' +
+        TP_MAX_AREA + '|' + TP_MAX_AREA_METRO + '|' + TP_AREA_RADIUS + '|' + TP_AREA_PAGE + '|' +
+        TP_AREA_COVER_MIN + '|' + TP_AREA_COVER_PAD + '|' + TP_MAX_METRO_GAPS + '|' +
+        TP_NAV_FAR_MARGIN + '|' +
         TP_NAV_BIAS_MAX + '|' + TP_HORIZON_RATIO + '|' + TP_SPEED.SUBWAY + '|' + TP_SPEED.BUS;
     var h = 2166136261;
     for (var i = 0; i < src.length; i++) {
@@ -5084,10 +5207,13 @@ function boundsOfCircle(c) {
     return new AMap.Bounds(new AMap.LngLat(minLng, minLat), new AMap.LngLat(maxLng, maxLat));
 }
 
+/* 圈内候选点检索：外接矩形分页，单页取满 pageSize 才翻页。
+ * 单页 50 + 最多 8 页（400 条）比原来 25×12（300 条）覆盖更多、请求少三成——
+ * 这是纯搜索配额的消耗，跟建圈共用同一个每日上限。 */
 function rectSearchPaged(bounds, page, acc, done) {
     var ps = new AMap.PlaceSearch({
         type: '120300|120301|120302|120303',
-        pageSize: 25,
+        pageSize: TP_AREA_PAGE,
         pageIndex: page,
         extensions: 'base'
     });
@@ -5099,7 +5225,7 @@ function rectSearchPaged(bounds, page, acc, done) {
         onDone: function (status, result) {
             if (status === 'success') {
                 acc = acc.concat(result.poiList.pois);
-                if (result.poiList.pois.length === 25 && page < 12) {
+                if (result.poiList.pois.length >= TP_AREA_PAGE && page < 8) {
                     setTimeout(function () { rectSearchPaged(bounds, page + 1, acc, done); }, 200);
                     return;
                 }
