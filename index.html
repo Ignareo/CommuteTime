@@ -1008,18 +1008,26 @@ var TP_AREA_COVER_MIN = 500;                     // 覆盖半径下限：返回 
 var TP_AREA_COVER_PAD = 200;                     // 覆盖半径在实际最远站之外留的缓冲（米）
 // 兜底先验（含停站）：只有该线路没学到任何导航样本时才用，值取上海地铁/公交的中位水平
 var TP_SPEED = { SUBWAY: 35, BUS: 12 };
-/* 逐线速度学习：样本时间取的是 Transfer 单线 segment 的 `sg.time`，而它**含候车**——
- * 同一段陆家浜路→杨高中路 7.4km，高德给 17 分钟，实际运行 9~10 分钟；发车间隔越长、
- * 区间越短，摊得越狠。不扣这段固定开销，学到的速度会系统性偏慢 20~30%，建图时又优先
- * 用学到的值，结果比兜底先验还差：实测上海 18 号线一度学成 26.9km/h（真实 37~47），
- * 60 分钟圈从航头一路缩到康桥。
- * 故：① 学之前扣掉 TP_WAIT[mode] 的候车；② 只吃长区间样本（候车摊得薄）；
- * ③ 口径带版本号，改口径时旧样本整体作废，否则新旧混算永远调不回来。
- * 区间下限保持 [25, …] 不按上海抬到 32：别的城市有更慢的线与更长的发车间隔，
- * 学到的慢速度要能被保留，脏样本靠"长度门槛 + 扣候车"过滤而不是靠速度大小。 */
-var TP_SPEED_VER = 2;                                     // 1=直接反算（含候车），2=扣候车
-var TP_NAV_LEARN_MIN = { SUBWAY: 5000, BUS: 3000 };       // 米
-var TP_NAV_SPEED_RANGE = { SUBWAY: [25, 60], BUS: [4, 30] };
+/* 逐线速度学习：Transfer 单线 segment 的 `sg.time` **含等这一班车的候车**——
+ * 实测同一段陆家浜路→杨高中路（9号线 7.42km）在 08:00/08:06/18:00 分别是
+ * 1020/900/870 秒；差的那 150 秒就是候车。候车是**加性固定开销**（t = d/v + W），
+ * 不随距离增长，所以短区间摊得狠：18号线 6.1km 样本 raw 26.9km/h、22.5km 样本
+ * raw 39.2km/h，扣同一个 150 秒会把长区间系统性高估、短区间仍偏低。
+ * v3 改为存原始样本、用时按线路回归同时估 v 与 W：
+ *   - Theil-Sen（ pairwise 斜率中位数）抗离群，比最小二乘稳；
+ *   - 样本不足或距离跨度不够时退回固定候车 TP_WAIT；
+ *   - 候车夹在 [0, 420] 秒，避免个别样本的极端值污染斜率；
+ *   - 最终速度用距离加权汇总（sum d / sum(t-W)），长区间天然权重更大。
+ * 口径带版本号，改口径时旧样本整体作废，否则新旧混算永远调不回来。
+ * 区间下限保持 [25, …] 不按上海抬到 32：别的城市有更慢的线与更长的发车间隔。
+ * 上限放到 120：机场线/快线旅速实测 60~110km/h（大兴机场线 110、成都19号线 105、
+ * 广州18号线 98、昆明6号线 62），60 会把这些真实样本全判成脏数据退回 35 先验。 */
+var TP_SPEED_VER = 3;                                     // 1=含候车, 2=固定扣候车, 3=回归估候车+速度
+var TP_NAV_LEARN_MIN = { SUBWAY: 3000, BUS: 3000 };       // 米（回归法短样本也能用）
+var TP_NAV_SPEED_RANGE = { SUBWAY: [25, 120], BUS: [4, 30] };
+// 兜底候车与建图候车同源：回归不可用（样本不足/跨度不够）时就用建图那套值
+var TP_WAIT_BOUND = { SUBWAY: 420, BUS: 480 };            // 回归候车的合理上限（秒）
+var TP_SPEED_SAMPLES_MAX = 16;                            // 每条线路保留的原始样本数上限
 // 导航复核：所有可能进圈的站都参与，估值大的先查（最容易被高估的就是最远那批）
 var TP_NAV_CAP_MAX = 100;
 // 偏差系数：已复核站的「导航/模型」比值取 60% 分位修正未复核站；导航全失败时用固定安全余量。
@@ -1216,9 +1224,9 @@ var tpMetroMax = loadJson(TP_METRO_MAX_KEY, {});
 if (!tpMetroMax || typeof tpMetroMax !== 'object') tpMetroMax = {};
 
 /* ---------- 逐线速度表（导航反算，跨会话复用） ----------
- * 键 = 城市|SUBWAY|18号线，值 = {d: 累计米, t: 累计秒, n: 样本数, ts: 时间戳}。
- * 速度 = d/t，含停站、不含候车；样本按「距离加权」而不是简单平均，长区间权重更大。
- * 新样本超过 8 个时旧样本折半，避免运营图调整后老数据永久霸占。 */
+ * 键 = 城市|SUBWAY|18号线，值 = {v: 口径, s: [[米, 原始秒], ...], ts: 时间戳}。
+ * 存原始样本而非累计值，才能用回归把「候车（加性）」与「旅速（乘性）」分开。
+ * 样本超过上限时丢最旧的一半，避免运营图调整后老数据永久霸占。 */
 var TP_SPEED_CACHE_KEY = 'house_tool_transit_line_speed';
 var TP_SPEED_CACHE_MAX = 400;
 var TP_SPEED_CACHE_TTL = 60 * 24 * 3600 * 1000;
@@ -1242,14 +1250,60 @@ function tpLineId(mode, name) {
     return nm ? mode + '|' + nm : '';
 }
 
+/* Theil-Sen 回归：对所有样本对求斜率中位数，抗离群点（少数站被堵/大站客流拖慢）。
+ * 返回 [斜率 s/m, 截距秒]；样本太少或距离跨度不足返回 null 让调用方退回固定候车。 */
+function tpSpeedFit(samples) {
+    var n = samples.length;
+    if (n < 4) return null;
+    var minD = Infinity, maxD = -Infinity;
+    for (var i = 0; i < n; i++) {
+        if (samples[i][0] < minD) minD = samples[i][0];
+        if (samples[i][0] > maxD) maxD = samples[i][0];
+    }
+    if (maxD - minD < 3000) return null;  // 距离挤在一起，斜率不可辨
+    var slopes = [];
+    // 样本按学习先后入队，不是按距离排序：dx 可能为负，斜率 (t_b-t_a)/(d_b-d_a)
+    // 与方向无关，必须按绝对值过滤，否则后学到短区间时整批点对被丢、回归退化。
+    for (var a = 0; a < n; a++) {
+        for (var b = a + 1; b < n; b++) {
+            var dx = samples[b][0] - samples[a][0];
+            if (Math.abs(dx) < 500) continue;  // 太近的点对放大量化噪声
+            slopes.push((samples[b][1] - samples[a][1]) / dx);
+        }
+    }
+    if (slopes.length < 3) return null;
+    slopes.sort(function (x, y) { return x - y; });
+    var slope = slopes[Math.floor(slopes.length / 2)];
+    if (!(slope > 0)) return null;
+    var waits = [];
+    for (var j = 0; j < n; j++) waits.push(samples[j][1] - slope * samples[j][0]);
+    waits.sort(function (x, y) { return x - y; });
+    var wait = waits[Math.floor(waits.length / 2)];
+    return [slope, wait];
+}
+
 function tpLineSpeed(cityKey, mode, name) {
     var id = tpLineId(mode, name);
     if (!id || !cityKey) return null;
     var e = tpSpeedCache[cityKey + '|' + id];
-    // v 是口径版本：旧口径的 d/t 含候车，和现在不可比，按「没学过」处理退回兜底先验
-    if (!e || !e.d || !e.t || !e.n || e.v !== TP_SPEED_VER) return null;
+    if (!e || e.v !== TP_SPEED_VER || !e.s || !e.s.length) return null;
     if (Date.now() - (e.ts || 0) > TP_SPEED_CACHE_TTL) return null;
-    var v = e.d / e.t * 3.6;
+    var samples = e.s;
+    var fit = tpSpeedFit(samples);
+    var fallback = TP_WAIT[mode] || 150;
+    var wait = fit ? fit[1] : fallback;
+    // 候车夹到合理范围：负数说明回归被离群点带偏，退回兜底；上限按模式分开（公交发车间隔更长）
+    var hi = TP_WAIT_BOUND[mode] || 420;
+    if (!(wait >= 0 && wait <= hi)) wait = fallback;
+    var d = 0, t = 0;
+    for (var i = 0; i < samples.length; i++) {
+        var eff = samples[i][1] - wait;
+        if (!(eff > 30)) continue;        // 扣掉候车后已无有效乘车时间，丢弃该样本
+        d += samples[i][0];
+        t += eff;
+    }
+    if (!d || !t) return null;
+    var v = d / t * 3.6;
     var r = TP_NAV_SPEED_RANGE[mode];
     return (isFinite(v) && v >= r[0] && v <= r[1]) ? v : null;
 }
@@ -1258,20 +1312,20 @@ function tpLearnLineSpeed(cityKey, mode, name, distM, sec) {
     if (!cityKey || !distM || !sec || !TP_NAV_LEARN_MIN[mode]) return false;
     var id = tpLineId(mode, name);
     if (!id || distM < TP_NAV_LEARN_MIN[mode]) return false;
-    // sg.time 是门到门段用时，含候车（发车间隔越长摊得越多）。扣掉固定候车再折算速度，
-    // 否则学到的值系统性偏慢，建图时又优先用它，比兜底先验还差。
-    var eff = sec - (TP_WAIT[mode] || 0);
-    if (!(eff > 0)) return false;
+    // 只存原始样本，脏数据靠「距离门槛 + 速度范围」过滤，不预先扣候车
     var r = TP_NAV_SPEED_RANGE[mode];
-    var v = distM / eff * 3.6;
-    if (!(v >= r[0] && v <= r[1])) return false;
+    var v = distM / sec * 3.6;
+    if (!(v >= r[0] * 0.5 && v <= r[1] * 1.5)) return false;  // 候车拉低 raw，下限放宽
     var k = cityKey + '|' + id;
     var e = tpSpeedCache[k];
-    if (!e || !e.d || !e.t || e.v !== TP_SPEED_VER) e = tpSpeedCache[k] = { d: 0, t: 0, n: 0, v: TP_SPEED_VER };
-    if (e.n >= 8) { e.d = e.d / 2; e.t = e.t / 2; e.n = Math.ceil(e.n / 2); }
-    e.d += distM;
-    e.t += eff;
-    e.n += 1;
+    if (!e || e.v !== TP_SPEED_VER || !Array.isArray(e.s)) e = tpSpeedCache[k] = { s: [], v: TP_SPEED_VER };
+    // 去重：热缓存回放（replayNav）会把同一批样本反复灌进来，不去重会挤掉新样本、
+    // 还让 ts 一直被刷新导致 60 天 TTL 形同虚设。相同 (dist,sec) 视为同一观测。
+    for (var i = 0; i < e.s.length; i++) {
+        if (e.s[i][0] === distM && e.s[i][1] === sec) return true;
+    }
+    if (e.s.length >= TP_SPEED_SAMPLES_MAX) e.s.splice(0, Math.floor(TP_SPEED_SAMPLES_MAX / 2));
+    e.s.push([distM, sec]);
     e.ts = Date.now();
     tpSpeedDirty = true;
     return true;
@@ -1292,18 +1346,22 @@ function tpPersistSpeeds() {
  * 只统计该城市的线路，别的城市学到的速度不该把本城的缓存顶掉。 */
 function tpSpeedSig(city) {
     var pre = String(city || '').replace(/市$/, '').trim();
-    var sum = 0, n = 0;
+    var h = 0, n = 0;
     Object.keys(tpSpeedCache).forEach(function (k) {
         if (pre && k.indexOf(pre + '|') !== 0) return;
         var e = tpSpeedCache[k];
-        if (!e || !e.d || !e.t) return;
-        var v = e.d / e.t * 3.6;
-        if (!isFinite(v)) return;
-        sum += Math.round(v);
+        if (!e || !e.s || !e.s.length) return;
         n++;
+        // 逐样本哈希（d,t 取整后按(FNV)混合），任一增/删/改都让签名变化。
+        // 不能只哈希平均速度：不同样本组合可能碰巧均速相同、回归结果却不同。
+        var pairs = e.s.slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+        h = (h ^ k.length) >>> 0;
+        for (var i = 0; i < pairs.length; i++) {
+            h = (Math.imul(h ^ Math.round(pairs[i][0]), 16777619) ^ Math.round(pairs[i][1])) >>> 0;
+        }
     });
-    // 带口径版本：换了学习口径（如扣候车）时签名随之变化，旧几何自动失效
-    return 'v' + TP_SPEED_VER + '|' + (n ? (n + 'x' + Math.round(sum / n)) : '0');
+    // 带口径版本：换了学习口径（如回归估候车）时签名随之变化，旧几何自动失效
+    return 'v' + TP_SPEED_VER + '|' + n + '|' + h.toString(36);
 }
 
 /* ---------- 导航复核结果缓存 ----------
@@ -2231,11 +2289,18 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function buildRoutes(q, variants) {
         var list = [];
         function addOne(v, stops, path) {
-            var m = v.t.indexOf('地铁') >= 0 ? 'SUBWAY' : 'BUS';
+            // 与 navLearn 用同一套判据：名字或 type 里出现任一轨道关键词都算地铁。
+            // 只看 v.t.indexOf('地铁') 会把「轨道交通X号线」「磁浮」误判成 BUS，
+            // 学到的 SUBWAY 速度在 BUS 键下查不到，白学。
+            var m = /地铁|轨道|磁浮|磁悬浮/.test(String(v.t || '') + String(v.n || '')) ? 'SUBWAY' : 'BUS';
             if (!modeAllowed(m)) return;
             // 速度优先取导航反算的逐线值（18 号线 37、11 号线 43、慢速公交 6 以下都能覆盖），
-            // 学不到才退回先验；同一线路不同变体（上下行）共用同一条速度记录
-            var spd = tpLineSpeed(cityKey, m, v.n) || tpLineSpeed(cityKey, m, q);
+            // 学不到才退回先验；同一线路不同变体（上下行）共用同一条速度记录。
+            // LineSearch 没有 transit_mode，只能靠名字判方式，可能和学习侧（Transfer 的
+            // transit_mode）判出的 mode 不同（如「机场线」）；两个键都试，学到的速度不白费。
+            var alt = m === 'SUBWAY' ? 'BUS' : 'SUBWAY';
+            var spd = tpLineSpeed(cityKey, m, v.n) || tpLineSpeed(cityKey, m, q)
+                || tpLineSpeed(cityKey, alt, v.n) || tpLineSpeed(cityKey, alt, q);
             var learned = !!spd;
             if (!spd) spd = TP_SPEED[m];
             var vms = spd * 1000 / 3600;
@@ -2279,7 +2344,9 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (!variants || !variants.length) return;
             var changed = false;
             (routes[q] || []).forEach(function (rt) {
-                var spd = tpLineSpeed(cityKey, rt.mode, rt.name) || tpLineSpeed(cityKey, rt.mode, q);
+                var alt = rt.mode === 'SUBWAY' ? 'BUS' : 'SUBWAY';
+                var spd = tpLineSpeed(cityKey, rt.mode, rt.name) || tpLineSpeed(cityKey, rt.mode, q)
+                    || tpLineSpeed(cityKey, alt, rt.name) || tpLineSpeed(cityKey, alt, q);
                 if (spd && Math.abs(spd - (rt.spd || spd)) > 0.05) changed = true;
             });
             if (!changed) return;
@@ -2450,15 +2517,24 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function navLineName(bl) {
         return String(bl.name || bl.line_name || (bl.busline && bl.busline.name) || '');
     }
+    /* 乘车段交通方式唯一判据：transit_mode（SUBWAY/RAIL/BUS）优先，线路名/类型 regex 兜底。
+     * 学习侧、锚点登记、方案构成、建图共用，避免同一段在两处判出不同 mode 导致速度存了查不到。 */
+    function navSegModeKey(sg) {
+        var tm = String((sg && sg.transit_mode) || '');
+        if (tm === 'SUBWAY' || tm === 'RAIL') return 'SUBWAY';
+        if (tm === 'BUS') return 'BUS';
+        var lines = navSegLines(sg || {});
+        if (!lines.length) return '';
+        var bl = lines[0];
+        return /地铁|轨道|磁浮|磁悬浮/.test(navLineName(bl) + String(bl.type || '')) ? 'SUBWAY' : 'BUS';
+    }
 
     function navPlanKind(plan) {
         var metro = false, bus = false;
         (plan.segments || []).forEach(function (sg) {
-            navSegLines(sg).forEach(function (bl) {
-                var nm = navLineName(bl);
-                var ty = String(bl.type || '');
-                if (/地铁|轨道|磁浮|磁悬浮/.test(nm + ty)) metro = true; else bus = true;
-            });
+            var key = navSegModeKey(sg);
+            if (key === 'SUBWAY') metro = true;
+            else if (key === 'BUS') bus = true;
         });
         if (metro && !bus) return 1;
         if (bus && !metro) return 2;
@@ -2467,10 +2543,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
 
     /* 乘车段的交通工具类型；拿不到线路名时返回空串（无法判断，不登记锚点） */
     function navSegMode(sg) {
-        var lines = navSegLines(sg);
-        if (!lines.length) return '';
-        var nm = navLineName(lines[0]) + String(lines[0].type || '');
-        return /地铁|轨道|磁浮|磁悬浮/.test(nm) ? 'metro' : 'bus';
+        var key = navSegModeKey(sg);
+        return key === 'SUBWAY' ? 'metro' : (key === 'BUS' ? 'bus' : '');
     }
 
     /* 把方案里每个乘车段的下车站登记成「免费锚点」：段用时（秒）累加即该站的门到门
@@ -2525,17 +2599,20 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
 
     /* 从导航方案反算逐线有效速度：乘车段给的是真实运营时间，比自己套均速可靠。
      * 2.0 把 distance/time 放在 segment 上、线路项只有名字与类型；只有单线路段才
-     * 能把整段距离/用时归属给那一条线，并行线路段宁可不学。 */
+     * 能把整段距离/用时归属给那一条线，并行线路段宁可不学。
+     * 模式判定优先用 segment.transit_mode（SUBWAY/BUS），名字/类型 regex 只兜底——
+     * 否则「轨道交通X号线」在学习侧算 SUBWAY、建图侧 v.t.indexOf('地铁') 算 BUS，
+     * 学到的速度存到 SUBWAY 键下、查时在 BUS 键下查不到，等于白学。 */
     function navLearn(plan, sink) {
         (plan.segments || []).forEach(function (sg) {
             var lines = navSegLines(sg);
             if (!lines.length) return;
             var segDist = Number(sg.distance) || 0;
             var segSec = Number(sg.transit_time || sg.time) || 0;
+            var modeKey = navSegModeKey(sg) || 'BUS';
             lines.forEach(function (bl) {
                 var nm = navLineName(bl);
-                var ty = String(bl.type || '');
-                var mode = /地铁|轨道|磁浮|磁悬浮/.test(nm + ty) ? 'SUBWAY' : 'BUS';
+                var mode = modeKey;
                 var dist = Number(bl.distance) || (lines.length === 1 ? segDist : 0);
                 var sec = Number(bl.time) || Number(bl.duration) || (lines.length === 1 ? segSec : 0);
                 if (!nm || !dist || !sec) return;
