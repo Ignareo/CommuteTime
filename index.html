@@ -942,6 +942,8 @@ function buildPreciseRing(center, mode, minutes, onProgress, onDone, ctrl) {
  *      校准样本（只补还没有单线样本的线路），其余名额全给「可能翻进/翻出」的站。
  *      最远一桶（模型已超目标 3% 以上）延后到主波结束再决定：校准后仍超时的直接跳过，
  *      模型偏悲观时才继续查，省下信息量最低的一批请求。
+ *      导航方案里每个乘车段的下车站也顺带成为免费锚点（段用时累加即该站门到门上界），
+ *      作为第二遍种子与站点到达上界，零额外请求。
  *   ⑦ 偏差系数：已复核站的「导航/模型」比值取 60% 分位，作为未复核站的时间修正；模型整体
  *      偏快时，没来得及复核的站也不会原样漏进圈。导航全失败时用固定安全余量兜底。
  *      近失补查按「最后乘坐线路」聚合：每条线只查 1~2 个代表站，其余站用该线的比值修正，
@@ -1512,7 +1514,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 calls: navCalls, hits: navHits, anchors: navAnchors, learnedLines: learnedLines,
                 pruned: navPruned, cal: navCal, refineGroups: navRefineGroups,
                 refineSkipped: navRefineSkipped, farSkipped: navFarSkipped,
-                biasSamples: navBiasSamples, lineScales: lineScalesDebug()
+                biasSamples: navBiasSamples, midAnchors: navMidAnchors,
+                lineScales: lineScalesDebug()
             }
         };
         Object.keys(extra || {}).forEach(function (k) { info[k] = extra[k]; });
@@ -1870,6 +1873,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var navRefined = false;
     // 候选剪枝 / 校准样本 / 近失分组 / 远端跳过的统计，写进 __tpDebug 便于核对预算
     var navPruned = 0, navCal = 0, navRefineGroups = 0, navRefineSkipped = 0, navFarSkipped = 0;
+    var navMidAnchors = 0;
     // 第二遍松弛统一把各项耗时乘这个系数。不能在 finish() 里对最终 time 再乘一次：
     // 那时 best 已被导航锚点重新计算过，再乘会使「已锚定 + 又被系数收紧」双重修正，
     // 临界站（例如 18 号线御桥）会被无端推出圈。
@@ -1903,6 +1907,59 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         if (metro && !bus) return 1;
         if (bus && !metro) return 2;
         return 0;
+    }
+
+    /* 乘车段的交通工具类型；拿不到线路名时返回空串（无法判断，不登记锚点） */
+    function navSegMode(sg) {
+        var lines = navSegLines(sg);
+        if (!lines.length) return '';
+        var nm = navLineName(lines[0]) + String(lines[0].type || '');
+        return /地铁|轨道|磁浮|磁悬浮/.test(nm) ? 'metro' : 'bus';
+    }
+
+    /* 把方案里每个乘车段的下车站登记成「免费锚点」：段用时（秒）累加即该站的门到门
+     * 上界。Transfer 一次返回多段，换乘站因此无需额外请求就能拿到一个真实到达时刻；
+     * 上车站与下一段的上车站重复，只取下车站。同名站可能不止一个（公交站常见），
+     * 优先用下车站坐标就近匹配，坐标缺失时只接受名字唯一的站——宁可漏登，不可错登。 */
+    function navPlanStops(plan) {
+        var t = 0, broken = false;
+        (plan.segments || []).forEach(function (sg) {
+            if (broken) return;
+            var segSec = Number(sg.transit_time || sg.time) || 0;
+            // 乘车段缺用时会让后续累加整体偏小，宁可从这里起不再登记
+            if (segSec <= 0) {
+                if (sg.transit) broken = true;
+                return;
+            }
+            if (sg.transit && sg.transit.off_station) {
+                var stop = sg.transit.off_station;
+                var mode = navSegMode(sg);
+                var nm = stop.name || stop.stop_name;
+                if (mode && nm) {
+                    var list = byName[stationGroupKey(mode, nm)] || [];
+                    var n = null;
+                    var loc = stop.location, lng, lat;
+                    if (Array.isArray(loc)) { lng = parseFloat(loc[0]); lat = parseFloat(loc[1]); }
+                    else if (loc && typeof loc === 'object') { lng = parseFloat(loc.lng); lat = parseFloat(loc.lat); }
+                    if (isFinite(lng) && isFinite(lat)) {
+                        var bd = Infinity;
+                        list.forEach(function (kk) {
+                            var nn = nodes[kk];
+                            var d = tpDist([nn.lng, nn.lat], [lng, lat]);
+                            if (d < bd) { bd = d; n = nn; }
+                        });
+                        if (bd > 300) n = null;
+                    } else if (list.length === 1) {
+                        n = nodes[list[0]];
+                    }
+                    if (n && kindAllowed(n.kind)) {
+                        var sec = t + segSec;
+                        if (!isFinite(n.navMid) || sec < n.navMid) n.navMid = sec;
+                    }
+                }
+            }
+            t += segSec;
+        });
     }
 
     /* 从导航方案反算逐线有效速度：乘车段给的是真实运营时间，比自己套均速可靠。
@@ -1939,16 +1996,17 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (st !== 'success' || !r || !r.plans || !r.plans.length) { cb(null, 0); return; }
                 // 高德一次会给多套方案，第一套未必真的最快（尤其混了公交时）。同一份响应里
                 // 挑符合圈类型且用时最短的，不额外花调用；所有方案都拿来学逐线速度。
-                var bestSec = Infinity, bestKind = 0;
+                var bestSec = Infinity, bestKind = 0, bestPlan = null;
                 r.plans.forEach(function (p) {
                     var sec = Number(p.time);
                     if (!isFinite(sec) || sec <= 0) return;
                     var kind = navPlanKind(p);
                     var ok = want === 'SUBWAY' ? kind === 1 : (want === 'BUS' ? kind === 2 : true);
-                    if (ok && sec < bestSec) { bestSec = sec; bestKind = kind; }
+                    if (ok && sec < bestSec) { bestSec = sec; bestKind = kind; bestPlan = p; }
                     navLearn(p);
                 });
                 if (bestSec === Infinity) { cb(null, 0); return; }
+                navPlanStops(bestPlan);
                 cb(bestSec, bestKind);
             }
         });
@@ -2294,6 +2352,17 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             var n = nodes[k];
             if (navTrusted(n)) touch(k, n.navSec, n.via, n.rideSec, n.sure, n.lineCount);
         });
+        /* 方案内换乘站锚点：导航方案里每个乘车段的下车站都有一条真实路线走到，
+         * 累加段用时就是该站的门到门上界（不含最后一次步行）。这是零请求的额外锚点，
+         * 只作为第二遍种子——不写 navSec，避免用它替代该站自己的可达性判定。 */
+        var mids = 0;
+        Object.keys(nodes).forEach(function (k) {
+            var n = nodes[k];
+            if (!isFinite(n.navMid)) return;
+            touch(k, n.navMid, '', 0, true, 0);
+            mids++;
+        });
+        navMidAnchors = mids;
         step();
     }
 
@@ -2366,7 +2435,9 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             // 复核过的站以导航为准；没复核的站按样本反推的偏差系数收紧——模型系统性偏快时，
             // 没来得及复核的站不能原样按模型估值进圈
             var trusted = navTrusted(n);
-            var arr = trusted ? n.navSec : n.best;
+            // navMid 是方案里途经该站的真实到达上界，同样来自符合圈类型的方案；
+            // 直接导航偶尔给出更慢的一套（Transfer 是启发式），两者取更优
+            var arr = trusted ? Math.min(n.navSec, isFinite(n.navMid) ? n.navMid : Infinity) : n.best;
             if (!isFinite(arr) || arr > targetSec) return;
             var remain = Math.max(0, targetSec - arr);
             stList.push({
@@ -2400,7 +2471,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             var n = nodes[k];
             if (!kindAllowed(n.kind) || !isFinite(n.best)) return;
             var trusted = navTrusted(n);
-            var arr = trusted ? n.navSec : n.best;
+            var arr = trusted ? Math.min(n.navSec, isFinite(n.navMid) ? n.navMid : Infinity) : n.best;
             if (!isFinite(arr) || arr <= targetSec || arr > targetSec * 1.4) return;
             rejected.push({
                 name: n.name,
