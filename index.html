@@ -1821,10 +1821,14 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (!q) { next(); return; }
             if (queryState[q] === 'failed') { next(); return; }
             if (queryState[q] === 'done') { relaxRoutes(node, q, sec); next(); return; }
-            if (node.kind === 'metro' ? lineMetro >= TP_MAX_LINE_METRO : lineBus >= busCap) { next(); return; }
-            if (node.kind === 'metro') lineMetro++; else lineBus++;
-            calls++;
-            report('检索线路');
+            // 缓存命中的线路零请求，不该占线路检索额度：否则热缓存下明明有数据也用不上
+            var cachedLine = !!tpLineCache.get(cityKey + '|' + q);
+            if (!cachedLine) {
+                if (node.kind === 'metro' ? lineMetro >= TP_MAX_LINE_METRO : lineBus >= busCap) { next(); return; }
+                if (node.kind === 'metro') lineMetro++; else lineBus++;
+                calls++;
+                report('检索线路');
+            }
             loadLineVariants(q, function (variants) {
                 if (aborted()) { terminate(true); return; }
                 if (!variants) { queryState[q] = 'failed'; next(); return; }
