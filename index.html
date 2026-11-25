@@ -277,6 +277,12 @@
                     <input type="number" id="stationWalkMax" min="120" max="2000" step="50" style="flex:0 0 76px"> 米
                 </label>
             </div>
+            <div class="row" id="departRow" style="margin-top:6px;display:none">
+                <label style="flex:1 1 auto;font-size:12px;color:#374151;display:flex;align-items:center;gap:4px" title="实时线网圈的出发时段。选「现在出发」按调用时刻规划；选固定时段则用换乘接口的出发时间参数（leaveAt）钉在该时段的代表时刻，任何时间都能算早高峰的圈。改动仅对新建或刷新的圈生效，已有圈不自动重算。">
+                    出发时段
+                    <select id="departMode" style="flex:1"></select>
+                </label>
+            </div>
             <div id="minChips"></div>
             <button id="addCircleBtn">＋ 添加等时圈</button>
             <div class="row" style="margin-top:6px;flex-wrap:wrap">
@@ -329,6 +335,12 @@
             <div class="row" style="margin-top:4px">
                 <button id="batchBtn" class="ghost">批量算通勤</button>
                 <button id="clearPoiBtn" class="warn" style="margin-left:auto" title="清空全部候选地点">清空</button>
+            </div>
+            <div class="row" style="margin-top:4px">
+                <label class="hint" style="flex:1 1 auto;display:flex;align-items:center;gap:4px" title="批量算通勤的出发时段（与 ③ 的实时圈共用同一设置）。选固定时段时换乘查询按该时刻规划，结果不再随点击时刻漂移。">
+                    出发时段
+                    <select id="commuteDepartMode" style="flex:1"></select>
+                </label>
             </div>
             <div class="row" style="margin-top:8px">
                 <label class="hint" style="flex:0 0 auto">最长通勤 ≤</label>
@@ -976,8 +988,9 @@ function buildPreciseRing(center, mode, minutes, onProgress, onDone, ctrl) {
  * 区间距离按 LineSearch 的线路折线累计（不是站点直线相连），避免弯折线路被低估里程。
  * 步行按 config.yaml 的 walk_speed 并计 TP_DETOUR 绕行系数。线网与常数都不随日期变化，
  * 故缓存签名用出发时段桶而非具体日期（学到的逐线速度另算指纹，见 tpSpeedSig）。
- * 时段桶见 tpDepartBucket：Transfer 只能按「调用时刻」规划，圈天然是「现在出发」口径，
- * 但缓存/几何必须按时段隔离，否则早高峰算出的圈下午会被直接复用。 */
+ * 时段桶见 tpDepartBucket：Transfer 有 leaveAt 可以钉住出发时刻，默认「现在出发」，
+ * 也可由用户选固定时段（早高峰 08:00 等）；缓存/几何仍必须按时段隔离，
+ * 否则早高峰算出的圈下午会被直接复用。 */
 var TRANSIT_PRECISE_VER = 'tp5';
 var TP_DETOUR = 1.3;                             // 步行绕行系数（直线 → 实际路径）
 var TP_WAIT = { SUBWAY: 150, BUS: 240 };         // 首次上车候车（秒）
@@ -1271,9 +1284,9 @@ function tpSpeedSig(city) {
 }
 
 /* ---------- 导航复核结果缓存 ----------
- * 键 = 城市|工作日/周末|起点网格(约 150m)|站点，TTL 3 天：同一片区反复建圈只查一次。
- * 出发时间桶是工作日早高峰，而 Transfer 只按「当前时刻」规划，故按工作日/周末分桶存，
- * 避免拿周末平峰的公交时间当作早高峰结论。
+ * 键 = 城市|出发时段桶|起点网格(约 150m)|站点，TTL 3 天：同一片区反复建圈只查一次。
+ * 出发时段由圈快照（见 tpDepartBucket / departPin），不同时段的班次差异很大，
+ * 故按工作日/周末、高峰/平峰分桶存，避免拿周末平峰的公交时间当作早高峰结论。
  * 键里刻意不含圈类型：地铁圈与综合圈共用同一套 Transfer 策略（只有公交圈用 NO_SUBWAY），
  * 同一份响应本就同时含「全程轨道/混合/纯公交」多套方案，按方案构成把时间分开存即可跨圈
  * 复用——否则同一个站建地铁圈与综合圈各花一次请求，白扔一半配额。 */
@@ -1286,9 +1299,34 @@ var TP_NAV_NOSOL_TTL = 12 * 3600 * 1000;
 var tpNavCache = loadJson(TP_NAV_CACHE_KEY, {});
 if (!tpNavCache || typeof tpNavCache !== 'object') tpNavCache = {};
 
-/* 出发时段桶：高德 Transfer 只能按「调用时刻」规划，精确圈因此天然是「现在出发」口径
- * （时段会标在圈标签上）。缓存键与几何签名都带上它：早高峰的班次/路况与平峰差异很大，
- * 全天共用一份样本会让圈在一天之内互相污染。桶取得粗（高峰/平峰/夜间/周末），
+/* 出发时段：高德 Transfer 有 leaveAt(time, date)（JSAPI 2.0 实测有效——SDK 把它作为 v3 公交换乘
+ * 的 date/time 参数发出，格式 YYYY-MM-DD / HH:mm，非法值被静默忽略）。所以「现在出发」不是
+ * 唯一口径：选定固定时段后，导航复核与批量通勤都钉在该时段的代表时刻，任何时间都能算早高峰的圈，
+ * 也不必等到早高峰。缓存键与几何签名仍按时段桶隔离：早晚高峰的班次差异很大，样本不能混用。
+ * 钉住的时段与「现在出发」在同一桶内共用样本——两者说的是同一个时段，只是取样本的时刻不同。 */
+var TP_DEPART_PICK_KEY = 'house_tool_depart_mode';
+var TP_DEPART_PRESET = {
+    'wd-am': { hm: '08:00', wk: [1, 2, 3, 4, 5] },     // 工作日早高峰
+    'wd-day': { hm: '13:00', wk: [1, 2, 3, 4, 5] },    // 工作日平峰
+    'wd-pm': { hm: '18:00', wk: [1, 2, 3, 4, 5] },     // 工作日晚高峰
+    'wd-night': { hm: '22:30', wk: [1, 2, 3, 4, 5] },  // 工作日夜间
+    'we': { hm: '10:00', wk: [0, 6] }                  // 周末
+};
+var TP_DEPART_OPTIONS = [
+    ['now', '现在出发'],
+    ['wd-am', '工作日早高峰 08:00'],
+    ['wd-day', '工作日平峰 13:00'],
+    ['wd-pm', '工作日晚高峰 18:00'],
+    ['wd-night', '工作日夜间 22:30'],
+    ['we', '周末 10:00']
+];
+var tpDepartPick = 'now';   // 'now' 或 TP_DEPART_PRESET 的键
+try {
+    var _tpDp = localStorage.getItem(TP_DEPART_PICK_KEY);
+    if (_tpDp === 'now' || TP_DEPART_PRESET[_tpDp]) tpDepartPick = _tpDp;
+} catch (e) { /* ignore */ }
+
+/* 挂钟时段桶：选「现在出发」时按调用时刻归类（早高峰/平峰/夜间/周末）。桶取得粗，
  * 避免「11:05 建的圈 11:35 就失效」式的高频重算。 */
 function tpDepartBucket(d) {
     d = d || new Date();
@@ -1305,11 +1343,90 @@ var TP_DEPART_LABEL = {
     'wd-pm': '工作日晚高峰', 'wd-night': '工作日夜间'
 };
 function tpDepartLabel(b) { return TP_DEPART_LABEL[b] || ''; }
-function tpNavKey(cityKey, origin, node) {
-    return String(cityKey || '') + '|' + tpDepartBucket() + '|' +
+/* 时段桶 → 该时段的代表时刻（HH:mm）。圈上的 departPin 就是它：'' 表示「现在出发」。
+ * 恢复存档的旧圈没有 departPin，按「现在出发」处理——它当初确实是这样算的。 */
+function tpDepartHm(bucket) {
+    var p = TP_DEPART_PRESET[bucket];
+    return p ? p.hm : '';
+}
+/* 当前选择对应的钉住时刻：选「现在出发」时为空串，查询保持原行为 */
+function tpDepartPickHm() {
+    return tpDepartPick === 'now' ? '' : tpDepartHm(tpDepartPick);
+}
+/* 钉住时段的出发日期：最近一个「星期几符合且时刻还没过」的日子。
+ * 高德只接受有限的未来日期，逐日最多找 8 天；最坏（周五夜间→周一早高峰）也只要 3 天。 */
+function tpDepartDate(hm, wk, now) {
+    now = now || new Date();
+    var parts = String(hm || '').split(':');
+    var hh = parseInt(parts[0], 10) || 0, mm = parseInt(parts[1], 10) || 0;
+    for (var i = 0; i < 8; i++) {
+        var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, hh, mm, 0, 0);
+        if ((wk || []).indexOf(d.getDay()) < 0) continue;
+        if (d.getTime() <= now.getTime() + 60000) continue;   // 已过（留 1 分钟余量）
+        return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    }
+    return '';
+}
+/* 给一次换乘查询钉上出发时间。pin 为空 = 现在出发，什么也不做。
+ * 必须在 search() 之前调用：SDK 只在下一次请求里读这两个字段；老版本没有该方法时静默跳过。 */
+function tpApplyLeaveAt(inst, pin) {
+    if (!inst || !pin || typeof inst.leaveAt !== 'function') return;
+    var bucket = '';
+    Object.keys(TP_DEPART_PRESET).forEach(function (k) {
+        if (TP_DEPART_PRESET[k].hm === pin && !bucket) bucket = k;
+    });
+    if (!bucket) return;
+    var ds = tpDepartDate(pin, TP_DEPART_PRESET[bucket].wk);
+    if (!ds) return;
+    try { inst.leaveAt(pin, ds); } catch (e) { /* 忽略：退回按调用时刻规划 */ }
+}
+/* bucket 由调用方传入：圈把时段快照在自己的 departBucket 上，导航缓存键必须用它，
+ * 否则「选中早高峰、下午建圈」会按下午的桶写缓存，上午的样本复用不上。 */
+function tpNavKey(cityKey, origin, node, bucket) {
+    return String(cityKey || '') + '|' + (bucket || tpDepartBucket()) + '|' +
         origin[0].toFixed(3) + ',' + origin[1].toFixed(3) + '|' +
         node.kind + '|' + node.name;
 }
+/* 出发时段选择器：③（实时圈的数据源行）与 ④（批量算通勤）两处入口共用同一状态，
+ * 任一处改动都同步另一处。只影响新建/刷新的圈与之后发起的批量通勤，
+ * 已在图上的圈保持自己的时段快照（改选择器不会偷偷重算旧圈）。 */
+function departSelects() {
+    var out = [];
+    ['departMode', 'commuteDepartMode'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) out.push(el);
+    });
+    return out;
+}
+function renderDepartSelects() {
+    departSelects().forEach(function (sel) {
+        if (sel.options.length !== TP_DEPART_OPTIONS.length) {
+            sel.innerHTML = '';
+            TP_DEPART_OPTIONS.forEach(function (o) {
+                var op = document.createElement('option');
+                op.value = o[0];
+                op.textContent = o[1];
+                sel.appendChild(op);
+            });
+        }
+        sel.value = tpDepartPick;
+    });
+}
+function setDepartPick(v) {
+    if (v !== 'now' && !TP_DEPART_PRESET[v]) v = 'now';
+    if (v === tpDepartPick) { renderDepartSelects(); return; }
+    tpDepartPick = v;
+    try { localStorage.setItem(TP_DEPART_PICK_KEY, v); } catch (e) { /* ignore */ }
+    renderDepartSelects();
+    toast(v === 'now'
+        ? '出发时段：现在出发（新建/刷新圈、批量通勤按调用时刻）'
+        : '出发时段：' + tpDepartLabel(v) + ' ' + tpDepartHm(v) + '（新建/刷新圈、批量通勤按该时刻）');
+}
+(function bindDepartSelects() {
+    departSelects().forEach(function (sel) { sel.onchange = function () { setDepartPick(sel.value); }; });
+    renderDepartSelects();
+})();
+
 function tpNavGet(key) {
     var e = tpNavCache[key];
     if (!e) return null;
@@ -1685,6 +1802,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var kx = 111320 * Math.cos(origin[1] * Math.PI / 180);
     var searchCity = comp.city || cityName || '';
     var cityKey = String(searchCity || '').replace(/市$/, '').trim();
+    /* 本圈的出发时段：圈把时段快照在 departBucket/departPin 上（见 addCircleFrom），
+     * 导航缓存键与 leaveAt 都用它，不能读全局选择——建圈期间用户改了选择也会混进两套口径。 */
+    var departBucket = (ctrl && ctrl.departBucket) || tpDepartBucket();
+    var departPin = (ctrl && typeof ctrl.departPin === 'string') ? ctrl.departPin : '';
     // 步行范围内的地铁站与公交站分开检索：地铁站是骨架；公交站最多取四页——
     // 单页只有 25 条，起点错开百来米就会拿到不同线路集；实际翻不翻页由「满页 + 本页
     // 带出新线路」动态决定（实测市区 1.4km 内 70 个公交站要 3 页，第 4 页才空）。
@@ -1700,6 +1821,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function debugInfo(extra) {
         var info = {
             origin: origin, minutes: minutes, mode: want, walkSpeed: currentWalkSpeed(),
+            // 出发时段：pin 为空表示按调用时刻规划，否则导航查询都钉在该时刻
+            depart: { bucket: departBucket, pin: departPin || '' },
             nearRadius: Math.round(nearRadius), pois: nearPois.length, nearPages: nearPages,
             nodes: Object.keys(nodes).length, calls: calls, areaUsed: areaUsed,
             remotePicked: remotePicked, busRescuePicked: busRescuePicked,
@@ -2455,6 +2578,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             : ((AMap.TransferPolicy && AMap.TransferPolicy.LEAST_TIME != null) ? AMap.TransferPolicy.LEAST_TIME : 0);
         var policyTag = want === 'BUS' ? 'NS' : 'LT';
         var ts = new AMap.Transfer({ city: searchCity, policy: policy, extensions: 'all' });
+        // 钉住「本圈时段」的代表时刻（选「现在出发」时 departPin 为空，行为与原来一致）
+        tpApplyLeaveAt(ts, departPin);
         amapRequest('导航复核', {
             run: function (c2) { ts.search(origin, [node.lng, node.lat], c2); },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.plans && r.plans.length); },
@@ -2663,7 +2788,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
             if (!kindAllowed(n.kind) || n.navSec || !isFinite(n.best) || n.best > horizonSec) return;
-            takeNavHit(tpNavGet(tpNavKey(cityKey, origin, n)), n);
+            takeNavHit(tpNavGet(tpNavKey(cityKey, origin, n, departBucket)), n);
         });
     }
 
@@ -2732,7 +2857,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             }
             var node = nodes[navQueue[navIdx++].key];
             if (!node || node.navSec || node.navNoSol) continue;
-            var ck = tpNavKey(cityKey, origin, node);
+            var ck = tpNavKey(cityKey, origin, node, departBucket);
             if (takeNavHit(tpNavGet(ck), node)) continue;
             navCalls++;
             calls++;
@@ -3829,6 +3954,7 @@ function initApp() {
         var dmSel = document.getElementById('transitDataMode');
         var dmRow = document.getElementById('transitDataRow');
         var dmHint = document.getElementById('transitDataHint');
+        var dpRow = document.getElementById('departRow');
         if (!modeSel || !dmSel) return;
         function sync() {
             var transit = modeSel.value === 'SUBWAY,BUS' || modeSel.value === 'SUBWAY' || modeSel.value === 'BUS';
@@ -3837,6 +3963,8 @@ function initApp() {
             if (!transit) dmSel.value = 'legacy';
             dmSel.title = transit ? '公交/地铁等时圈的数据源' : '仅公交/地铁圈可选数据源';
             if (dmHint) dmHint.style.display = transit ? '' : 'none';
+            // 出发时段只对实时线网圈有效：高德到达圈接口没有出发时间参数
+            if (dpRow) dpRow.style.display = (transit && dmSel.value === 'precise') ? '' : 'none';
         }
         // 旧到达圈/Mapbox 上限 60 分钟，实时线网圈与步行/骑行可到 120。只在用户主动切换时
         // 钳制已填时长：初始化时 URL/方案包可能恢复了 90 分钟的实时圈，不能在这里抹掉。
@@ -4148,7 +4276,9 @@ function circleSig(companyId, mode, minutes, preciseFlag, dataMode, departBucket
         // 公交/地铁：只有高精度圈加后缀（算法版本 + 出发时段桶 + 步行配速，
         // 后两者都影响可达站点的步行半径）；旧到达圈保持原签名，
         // v3 及更早的存档/方案包/分享链接仍能命中几何缓存。
-        // 逐线速度指纹也进签名：学到新线路/运营图调整后，旧几何必须失效
+        // 逐线速度指纹也进签名：学到新线路/运营图调整后，旧几何必须失效。
+        // 钉住的时刻（departPin）刻意不进签名：同一时段桶里「现在出发」与固定时刻说的是同一个
+        // 时段，样本可以互相复用，只是前者取样本的时刻恰好落在桶内。
         parts.push('precise', TRANSIT_PRECISE_VER, departBucket || tpDepartBucket(), currentWalkSpeed(),
             TP_STATION_RADIUS_MAX, tpSpeedSig(comp.city || cityName), tpAlgoSig());
     }
@@ -4176,16 +4306,27 @@ function loadGeomCache() {
     renderGeomCacheInfo();
 }
 
+/* 写盘失败多半是配额不足（线网/导航缓存与圈几何抢同一份 localStorage）。整包写失败时
+ * 按时间淘汰最旧的四分之一再试：否则「写不进去 → 下次打开全部 miss → 全部重算 → 仍写不进去」
+ * 会变成每次刷新都烧一遍配额。全部淘汰光还写不进去才提示。 */
 function persistGeomCache() {
-    try {
-        localStorage.setItem(GEOM_CACHE_KEY, JSON.stringify(geomCache));
-    } catch (e) {
-        if (!geomCacheWarned) {
-            geomCacheWarned = true;
-            toast('本地圈缓存已满，本次不再写入（不影响使用）', 4000);
+    for (var attempt = 0; attempt < 4; attempt++) {
+        try {
+            localStorage.setItem(GEOM_CACHE_KEY, JSON.stringify(geomCache));
+            renderGeomCacheInfo();
+            return true;
+        } catch (e) {
+            var keys = Object.keys(geomCache).sort(function (a, b) { return geomCache[a].t - geomCache[b].t; });
+            if (keys.length < 2) break;
+            keys.slice(0, Math.max(1, Math.ceil(keys.length / 4))).forEach(function (k) { delete geomCache[k]; });
         }
     }
+    if (!geomCacheWarned) {
+        geomCacheWarned = true;
+        toast('本地圈缓存写不进去（存储配额不足）：下次打开这些圈需要手动重算，建议先导出方案包留档', 6000);
+    }
     renderGeomCacheInfo();
+    return false;
 }
 
 function storeGeom(sig, polygons) {
@@ -4194,13 +4335,14 @@ function storeGeom(sig, polygons) {
         geomCache[sig] = { t: Date.now(), g: LZString.compressToUTF16(JSON.stringify(polygons)) };
         var keys = Object.keys(geomCache).sort(function (a, b) { return geomCache[a].t - geomCache[b].t; });
         while (keys.length > GEOM_CACHE_MAX) { delete geomCache[keys.shift()]; }
-        persistGeomCache();
     } catch (e) {
         if (!geomCacheWarned) {
             geomCacheWarned = true;
-            toast('本地圈缓存写入失败（不影响使用）', 4000);
+            toast('本地圈缓存压缩失败（不影响使用）', 4000);
         }
+        return;
     }
+    persistGeomCache();
 }
 
 function fetchGeom(sig) {
@@ -4278,7 +4420,11 @@ function onRetimeSelected() {
         var old = sels[i++];
         var spec = { companyId: old.companyId, mode: old.mode, color: old.color, precise: old.precise, dataMode: old.dataMode };
         removeCircle(old.id);
-        addCircleFrom(spec.companyId, spec.mode, m, false, { color: spec.color, precise: spec.precise, dataMode: spec.dataMode });
+        // 改时长是重建同一个圈：时段快照沿用原圈，不要被当前选择器改成别的时段
+        addCircleFrom(spec.companyId, spec.mode, m, false, {
+            color: spec.color, precise: spec.precise, dataMode: spec.dataMode,
+            departBucket: old.departBucket, departPin: old.departPin
+        });
         setTimeout(next, 500);
     })();
 }
@@ -4322,15 +4468,17 @@ function onRefreshSelected() {
         if (i >= sels.length) return;
         if (precisePending > 0) { setTimeout(next, 1000); return; }
         var old = sels[i++];
-        // 当前签名（不用 old.geomSig）：删缓存后重建才会真正重算
-        var curSig = circleSig(old.companyId, old.mode, old.minutes, !!old.precise, old.dataMode);
+        // 当前签名（不用 old.geomSig）：删缓存后重建才会真正重算。时段桶必须用圈自己的，
+        // 否则「下午刷新早高峰圈」会按下午的桶查缓存，删错键、还可能命中旧几何跳过重算。
+        var curSig = circleSig(old.companyId, old.mode, old.minutes, !!old.precise, old.dataMode, old.departBucket);
         if (curSig && geomCache[curSig]) { delete geomCache[curSig]; persistGeomCache(); }
         var spec = { companyId: old.companyId, mode: old.mode, color: old.color, precise: old.precise, dataMode: old.dataMode };
         var wasVisible = old.visible !== false;
         removeCircle(old.id);
         var seqBefore = circleSeq;
         addCircleFrom(spec.companyId, spec.mode, old.minutes, false, {
-            color: spec.color, precise: spec.precise, dataMode: spec.dataMode
+            color: spec.color, precise: spec.precise, dataMode: spec.dataMode,
+            departBucket: old.departBucket, departPin: old.departPin
         });
         // 用新分配的 id 精确定位，避免起点缺失导致 addCircleFrom 提前返回时误改别的圈
         var fresh = circles.find(function (c) { return c.id > seqBefore; });
@@ -4367,8 +4515,12 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
             : TP_STATION_RADIUS_MAX;
     }
     // 出发时段随圈快照：缓存/签名按它隔离，标签也要显示本圈算的是哪个时段
+    var savedBucket = (opts && opts.departBucket) || '';
     var departBucket = (isTransitMode && dataMode === 'precise')
-        ? ((opts && opts.departBucket) || tpDepartBucket()) : '';
+        ? (savedBucket || tpDepartBucket()) : '';
+    // 钉住的代表时刻（'' = 现在出发）：恢复存档沿用圈自己的，新建才取当前选择
+    var departPin = (isTransitMode && dataMode === 'precise')
+        ? (savedBucket ? String((opts && opts.departPin) || '') : tpDepartPickHm()) : '';
     // 恢复/导入时沿用圈保存时的签名：缓存里已有该圈几何就直接装配，不因算法指纹/速度漂移而重算。
     // 但写死时段桶的旧签名不可信，丢弃后按当前时段重算一次（几何写回新签名，只多花这一遍）。
     var savedSig = (opts && opts.geomSig) || '';
@@ -4377,9 +4529,9 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
     var circle = {
         id: ++circleSeq,
         companyId: companyId,
-        label: circleLabel(comp, mode, minutes, !isTransit && !precise, precise, 0, dataMode, stationWalkMax, departBucket),
+        label: circleLabel(comp, mode, minutes, !isTransit && !precise, precise, 0, dataMode, stationWalkMax, departBucket, departPin),
         mode: mode, minutes: minutes, color: color, approx: !isTransit && !precise, precise: precise,
-        dataMode: dataMode, stationWalkMax: stationWalkMax, departBucket: departBucket,
+        dataMode: dataMode, stationWalkMax: stationWalkMax, departBucket: departBucket, departPin: departPin,
         geomSig: geomSig,
         polygons: [], overlays: [], visible: true, areaM2: 0
     };
@@ -4394,6 +4546,16 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
         refreshCircleLabel(circle);
         // 批量恢复：解压/装配是毫秒级，无需逐圈拉镜头与重算交集，由调用方统一收尾一次
         if (!(opts && opts.deferFit)) fitCircle(circle);
+        if (!(opts && opts.deferRefresh)) afterCirclesChanged(false);
+        if (!skipSave) saveState();
+        return;
+    }
+    /* 恢复存档/导入方案包但缓存未命中：**不自动查 API**。一次刷新会把所有圈的导航复核
+     * 重跑一遍（几十个圈 = 几百次调用，实时圈一条就是几十次），配额代价远超收益。
+     * 改为标「待计算」留在图上，由用户勾选后点「刷新选中圈」显式触发。 */
+    if (opts && opts.deferCompute) {
+        circle.pendingCompute = true;
+        refreshCircleLabel(circle);
         if (!(opts && opts.deferRefresh)) afterCirclesChanged(false);
         if (!skipSave) saveState();
         return;
@@ -4494,7 +4656,8 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
         })(circle, mode.slice(7));
     } else if (dataMode === 'precise') {
         // 实时线网圈：现查站点/线路并逐站松弛，再做一轮边界导航复核，约 40~90 秒，独占进度条与按钮
-        var tCtrl = { aborted: false };
+        // departBucket/departPin 传进建圈流程：导航复核要钉出发时刻，缓存键也要用圈自己的桶
+        var tCtrl = { aborted: false, departBucket: departBucket, departPin: departPin };
         var tFinished = false;
         function onTransitDone(polys, cancelled, errMsg, stats) {
             if (tFinished) return;
@@ -4814,13 +4977,14 @@ function fmtArea(m2) {
     return Math.round(m2) + 'm²';
 }
 
-function circleLabel(comp, mode, minutes, approx, precise, areaM2, dataMode, stationWalkMax, departBucket) {
+function circleLabel(comp, mode, minutes, approx, precise, areaM2, dataMode, stationWalkMax, departBucket, departPin) {
     var s = comp.name + ' · ' + MODE_LABEL[mode] + ' ' + minutes + ' 分钟' + (approx ? '(近似)' : (precise ? '(路网)' : ''));
     var isTransit = (mode !== 'walk' && mode !== 'ride' && mode.indexOf('mapbox-') !== 0);
     if (isTransit) {
-        // 时段是「现在出发」的口径：Transfer 只按调用时刻规划，标出来避免用户拿早高峰的圈
-        // 当全天结论；旧存档没有 departBucket 就只写「实时」
+        // 时段口径：钉住时刻要连同时分一起标（早高峰 08:00 与「现在出发的早高峰」不是一回事），
+        // 避免用户拿早高峰的圈当全天结论；旧存档没有 departBucket 就只写「实时」
         var dep = (dataMode === 'precise') ? tpDepartLabel(departBucket) : '';
+        if (dep && departPin) dep += ' ' + departPin;
         s += (dataMode === 'precise') ? ('(实时' + (dep ? '·' + dep : '') + ')') : '(旧数据)';
         if (dataMode === 'precise' && stationWalkMax) s += ' · 下车后步行上限' + stationWalkMax + 'm';
     }
@@ -4834,7 +4998,10 @@ function refreshCircleLabel(c) {
     var comp = companies[c.companyId];
     if (!comp) return;
     c.areaM2 = circleAreaM2(c);
-    c.label = circleLabel(comp, c.mode, c.minutes, c.approx, c.precise, c.areaM2, c.dataMode, c.stationWalkMax, c.departBucket);
+    // 有几何就不再是「待计算」；恢复存档时缺几何的圈靠这个标记提示用户手动重算
+    if (c.polygons && c.polygons.length) c.pendingCompute = false;
+    c.label = circleLabel(comp, c.mode, c.minutes, c.approx, c.precise, c.areaM2, c.dataMode, c.stationWalkMax, c.departBucket, c.departPin);
+    if (c.pendingCompute) c.label += ' · 待计算';
     renderCircleList();
 }
 
@@ -6313,6 +6480,10 @@ function computeCommute(item, onDone) {
     var mainComp = actives[0];
     var toMain = [mainComp.lnglat.lng, mainComp.lnglat.lat];
     var mkey = coordKey(mainComp.lnglat);
+    // 出发时段按当前选择钉住（与 ③ 的实时圈共用同一设置）。选「现在出发」时 depTag 为空，
+    // 缓存键与行为完全保持原样——否则升级后所有旧通勤缓存都会被判失效、白花一遍配额。
+    var depPin = tpDepartPickHm();
+    var depTag = depPin ? (tpDepartPick + '@' + depPin + '|') : '';
     // 每个起点1次公交 + 最近地铁1次 + 首个起点骑行步行各1次（控制配额）
     var tasks = [];
 
@@ -6324,10 +6495,11 @@ function computeCommute(item, onDone) {
         tasks.push({
             // 城市纳入缓存键：逆地理是异步的，若首次以 '全国' 查询，城市名补齐后键会变化并重新查询，
             // 避免把「按错误城市得到的无方案」永久缓存下来
-            key: 'T|' + transferCity + '|' + okey + '|' + pk,
+            key: 'T|' + transferCity + '|' + depTag + okey + '|' + pk,
             label: '公交规划',
             run: function (cb) {
                 var ts = new AMap.Transfer({ city: transferCity, policy: AMap.TransferPolicy.LEAST_TIME });
+                tpApplyLeaveAt(ts, depPin);
                 ts.search(from, to, cb);
             },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.plans && r.plans.length); },
@@ -6744,7 +6916,7 @@ function buildState() {
                 id: c.id, companyId: c.companyId, mode: c.mode, minutes: c.minutes,
                 color: c.color, visible: c.visible, precise: !!c.precise,
                 dataMode: c.dataMode || '', geomSig: c.geomSig || '', stationWalkMax: c.stationWalkMax || 0,
-                departBucket: c.departBucket || ''
+                departBucket: c.departBucket || '', departPin: c.departPin || ''
             };
         })
     };
@@ -6779,11 +6951,13 @@ function persistCompanyCity(item) {
  * merge=false：本机恢复（页面初始为空）——保留原序号/城市；
  * merge=true：方案包导入——追加语义：起点按坐标去重复用、圈按签名去重跳过、
  *             id 一律重新分配，避免与现有对象冲突。
- * 圈的回放分两路：几何缓存命中的当场同步装配（毫秒级，统一一次 fitView/refreshRegions），
- * 未命中的才按 400ms 排队查 API，避免触发限流。queued = 需要异步查询的圈数。
- * 返回 {addedCompanies, addedCircles, skipped, queued}（addedCircles 在回放定时器里累计） */
+ * 圈的回放分两路：几何缓存命中的当场同步装配（毫秒级，统一一次 fitView/refreshRegions）；
+ * **未命中的不查 API**——只标「待计算」留在图上，用户点「刷新选中圈」才真正重算。
+ * 一次刷新把所有圈重算一遍要几百次导航调用，而缓存写不进时每次刷新都会重演。
+ * queued = 待计算的圈数。
+ * 返回 {addedCompanies, addedCircles, skipped, queued} */
 function applyState(state, merge) {
-    var res = { addedCompanies: 0, addedCircles: 0, skipped: 0, queued: 0 };
+    var res = { addedCompanies: 0, addedCircles: 0, skipped: 0, queued: 0, hit: 0 };
     if (!state || typeof state !== 'object') return res;
     // 交集/差集开关先恢复：圈是异步加载的，每个圈加载完 afterCirclesChanged 都会重算
     if (state.intersectOnly !== undefined) {
@@ -6817,7 +6991,11 @@ function applyState(state, merge) {
         });
         (state.circles || []).forEach(function (c, i) {
             var nid = idMap0[c.companyId] || c.companyId;
-            setTimeout(function () { addCircleFrom(nid, c.mode, c.minutes, true); }, 400 * (i + 1));
+            // 与 v4 恢复口径一致：老格式没有 geomSig，必然 miss，同样不自动查 API
+            res.queued++;
+            setTimeout(function () {
+                addCircleFrom(nid, c.mode, c.minutes, true, { deferCompute: true });
+            }, 400 * (i + 1));
         });
         renderCompanySelects();
         return res;
@@ -6862,7 +7040,7 @@ function applyState(state, merge) {
         });
     }
     var savedCircles = state.circles || [];
-    var pending = 0, idx = 0;
+    var pending = 0;
     var batchOverlays = null, batchCount = 0;
     savedCircles.forEach(function (c) {
         if (!c) return;
@@ -6879,7 +7057,7 @@ function applyState(state, merge) {
             if (existingSigs[sig]) { res.skipped++; return; }
             existingSigs[sig] = true;
         }
-        var opts = { color: c.color, dataMode: dataMode, geomSig: sig, departBucket: c.departBucket || '' };
+        var opts = { color: c.color, dataMode: dataMode, geomSig: sig, departBucket: c.departBucket || '', departPin: c.departPin || '' };
         if (c.stationWalkMax) opts.stationWalkMax = c.stationWalkMax;
         if (c.precise !== undefined) opts.precise = !!c.precise;   // v2 及更早无此字段 → 沿用勾选框
         if (typeof LZString !== 'undefined' && geomCache[sig] && geomCache[sig].g) {
@@ -6888,6 +7066,7 @@ function applyState(state, merge) {
             opts.deferFit = true;
             opts.deferRefresh = true;
             var before0 = circles.length;
+            res.hit++;
             addCircleFrom(cid, c.mode, c.minutes, true, opts);
             if (circles.length > before0) {
                 res.addedCircles++;
@@ -6898,23 +7077,23 @@ function applyState(state, merge) {
             }
             return;
         }
-        // 未缓存（或缓存失效）：需要真实 API 查询，仍按 400ms 间隔排队，避免触发限流
+        // 未缓存（或缓存失效）：**不自动查 API**，标「待计算」留在图上（见 addCircleFrom 的
+        // deferCompute 分支）。一次刷新把所有圈重算一遍 = 几百次调用，且写不进缓存时每次
+        // 刷新都会重演；改由用户勾选后点「刷新选中圈」显式触发。
         pending++;
-        var i = idx++;
-        setTimeout(function () {
-            var before = circles.length;
-            addCircleFrom(cid, c.mode, c.minutes, true, opts);
-            if (circles.length > before) {
-                res.addedCircles++;
-                var nc = circles[circles.length - 1];
-                // 兼容旧版：visible=false 或 useIntersect=false 都视为未勾选
-                if (c.visible === false || c.useIntersect === false) nc.visible = false;
-                renderCircleList();
-                applyAllVisibility();
-            }
-        }, 400 * (i + 1));
+        opts.deferCompute = true;
+        opts.deferFit = true;
+        opts.deferRefresh = true;
+        var before1 = circles.length;
+        addCircleFrom(cid, c.mode, c.minutes, true, opts);
+        if (circles.length > before1) {
+            res.addedCircles++;
+            var nc1 = circles[circles.length - 1];
+            // 兼容旧版：visible=false 或 useIntersect=false 都视为未勾选
+            if (c.visible === false || c.useIntersect === false) nc1.visible = false;
+        }
     });
-    if (batchCount) {
+    if (batchCount || pending) {
         if (batchOverlays && batchOverlays.length) {
             try { map.setFitView(batchOverlays, false, fitAvoid()); } catch (e) { /* ignore */ }
         }
@@ -6937,9 +7116,22 @@ function restoreState() {
         var state = JSON.parse(raw);
         var circlesN = (state.circles || []).length;
         var res = applyState(state, false);
+        // 排查「每次刷新都要重算」：命中/缺失各几个、压缩库是否加载、缓存里有多少条目
+        window.__restoreDebug = {
+            circles: circlesN, hit: res.hit, miss: res.queued,
+            geomEntries: Object.keys(geomCache).length,
+            lzString: (typeof LZString !== 'undefined')
+        };
         if (circlesN) {
-            // 只等真正需要查 API 的圈；缓存命中的已同步出现
-            setTimeout(function () { toast('已恢复上次的起点位置与等时圈'); }, 400 * res.queued + 800);
+            var msg = '已恢复上次的起点位置与等时圈';
+            if (res.queued) {
+                msg = '已恢复 ' + res.addedCircles + ' 个等时圈，其中 ' + res.queued +
+                    ' 个没有可复用的本地几何，已标「待计算」：勾选后点「刷新选中圈」才会重算（刷新页面不再自动耗配额）';
+                // 压缩库没加载时几何永远读不出来，用户只会看到「每次都得重算」，这里点明原因
+                if (typeof LZString === 'undefined') msg += '。lz-string 未加载，几何缓存整体不可用';
+            }
+            // 恢复过程本身不再发请求，提示无需等待
+            setTimeout(function () { toast(msg, res.queued ? 9000 : 3000); }, 600);
         }
     } catch (e) { renderCompanySelects(); /* ignore */ }
 }
@@ -7055,9 +7247,11 @@ function onImportPackage() {
     var res = applyState(state, true);
     setTimeout(function () {
         saveState();
-        toast('导入完成：起点 +' + res.addedCompanies + '，等时圈 +' + res.addedCircles +
-            '，跳过重复 ' + res.skipped + (geomN ? '，并入圈几何 ' + geomN + ' 条' : ''), 4500);
-    }, 400 * res.queued + 700);
+        var msg = '导入完成：起点 +' + res.addedCompanies + '，等时圈 +' + res.addedCircles +
+            '，跳过重复 ' + res.skipped + (geomN ? '，并入圈几何 ' + geomN + ' 条' : '');
+        if (res.queued) msg += '；' + res.queued + ' 个圈没有内置几何，已标「待计算」（点「刷新选中圈」重算）';
+        toast(msg, res.queued ? 8000 : 4500);
+    }, 700);
 }
 
 /* GCJ02 → WGS84 近似转换（中国大陆范围内有效） */
