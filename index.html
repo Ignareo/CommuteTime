@@ -1222,10 +1222,16 @@ function tpSpeedSig(city) {
 /* ---------- 导航复核结果缓存 ----------
  * 键 = 城市|工作日/周末|起点网格(约 150m)|站点，TTL 3 天：同一片区反复建圈只查一次。
  * 出发时间桶是工作日早高峰，而 Transfer 只按「当前时刻」规划，故按工作日/周末分桶存，
- * 避免拿周末平峰的公交时间当作早高峰结论。 */
+ * 避免拿周末平峰的公交时间当作早高峰结论。
+ * 键里刻意不含圈类型：地铁圈与综合圈共用同一套 Transfer 策略（只有公交圈用 NO_SUBWAY），
+ * 同一份响应本就同时含「全程轨道/混合/纯公交」多套方案，按方案构成把时间分开存即可跨圈
+ * 复用——否则同一个站建地铁圈与综合圈各花一次请求，白扔一半配额。 */
 var TP_NAV_CACHE_KEY = 'house_tool_transit_nav_cache';
 var TP_NAV_CACHE_MAX = 600;
 var TP_NAV_CACHE_TTL = 3 * 24 * 3600 * 1000;
+/* 「该构成没有方案」也存一条，有效期短得多：没有方案通常是线网结构决定的，半天内重查
+ * 纯属浪费；但施工停运这类临时因素会变，不能沿用 3 天。 */
+var TP_NAV_NOSOL_TTL = 12 * 3600 * 1000;
 var tpNavCache = loadJson(TP_NAV_CACHE_KEY, {});
 if (!tpNavCache || typeof tpNavCache !== 'object') tpNavCache = {};
 
@@ -1233,36 +1239,120 @@ function tpDayBucket() {
     var d = new Date().getDay();
     return (d === 0 || d === 6) ? 'we' : 'wd';
 }
-/* 圈类型也要进键：公交圈走 NO_SUBWAY，结果不能给「地铁+公交」圈复用（两个口径的时间不同） */
-function tpNavKey(cityKey, origin, node, mode) {
+function tpNavKey(cityKey, origin, node) {
     return String(cityKey || '') + '|' + tpDayBucket() + '|' +
-        origin[0].toFixed(3) + ',' + origin[1].toFixed(3) + '|' + String(mode || '') +
-        '|' + node.kind + '|' + node.name;
+        origin[0].toFixed(3) + ',' + origin[1].toFixed(3) + '|' +
+        node.kind + '|' + node.name;
 }
 function tpNavGet(key) {
     var e = tpNavCache[key];
-    if (!e || !isFinite(e.s) || !e.s) return null;
-    if (Date.now() - (e.t || 0) > TP_NAV_CACHE_TTL) return null;
+    if (!e) return null;
+    var age = Date.now() - (e.t || 0);
+    if (age > TP_NAV_CACHE_TTL) return null;
+    var hasSec = isFinite(e.s) && e.s > 0;
+    var hasAlt = Array.isArray(e.b) && e.b.some(function (v) { return isFinite(v) && v > 0; });
+    // 只剩负缓存（无方案）时按短 TTL；条目里还留着别的构成的真实时间就仍按 3 天算
+    if (!hasSec && !hasAlt && age > TP_NAV_NOSOL_TTL) return null;
     return e;
 }
-/* mo 存方案构成（1 全程轨道 / 2 全程公交 / 0 混合），供不同圈类型判断能否采信。
- * v = 逐线速度样本 [线路名, 模式, 距离, 秒]，m = 目标站的方案内到达时刻：
- * 只有 s 的话，热缓存场景每次建圈都要重新花校准样本学同样的速度、丢同样的锚点。 */
+/* 该构成是否「查过且确认无方案」。负缓存单独计时（12 小时）：条目的 b 可能还带着
+ * 别的构成的 3 天真实时间，不能让一条旧的无解标记跟着一起活 3 天。 */
+function navNoSolLive(e, want) {
+    if (!e || !e.nq || !e.nq[want]) return false;
+    return Date.now() - (e.nq[want] || 0) < TP_NAV_NOSOL_TTL;
+}
+/* 条目能否回答本圈类型：地铁圈要 b[1]（全程轨道），公交圈要 b[2]（全程公交）；
+ * 综合圈要「最快怎么走」，只有 LEAST_TIME 策略的条目覆盖了全部构成——公交圈的
+ * NO_SUBWAY 响应根本不含轨道方案，拿它当最快会凭空把圈压小。 */
+function navHitSec(e, want) {
+    if (!e) return NaN;
+    if (navNoSolLive(e, want)) return NaN;
+    if (e.q === want && isFinite(e.s) && e.s > 0) return e.s;
+    var b = Array.isArray(e.b) ? e.b : null;
+    if (!b) return NaN;
+    if (want === 'SUBWAY') return (isFinite(b[1]) && b[1] > 0) ? b[1] : NaN;
+    if (want === 'BUS') return (isFinite(b[2]) && b[2] > 0) ? b[2] : NaN;
+    if (e.pl !== 'LT') return NaN;
+    var best = Infinity;
+    b.forEach(function (v) { if (isFinite(v) && v > 0 && v < best) best = v; });
+    return isFinite(best) ? best : NaN;
+}
+/* 命中方案属于哪种构成（1 全程轨道 / 2 全程公交 / 0 混合），供 navTrusted 判定 */
+function navHitKind(e, want) {
+    if (e && e.q === want && isFinite(e.s) && e.s > 0) return e.mo | 0;
+    if (want === 'SUBWAY') return 1;
+    if (want === 'BUS') return 2;
+    var b = (e && e.b) || [], best = Infinity, kind = 0;
+    b.forEach(function (v, i) { if (isFinite(v) && v > 0 && v < best) { best = v; kind = i; } });
+    return kind;
+}
+/* mo 存本次采信方案的构成（1 全程轨道 / 2 全程公交 / 0 混合）；b = 各构成的最快门到门秒
+ * （索引 0/1/2，缺失为 null），跨圈复用它；q = 写入时的圈类型，pl 为策略（LT/NS）。
+ * v = 逐线速度样本 [线路名, 模式, 距离, 秒]，m = 目标站的方案内到达时刻，w = 最后一段步行。
+ * m 属于「当时采信的那套方案」，跨圈命中时不回放（构成不同，下车时刻不可比）；w 与构成无关。
+ * 合并写：同一站可能先被综合圈查过（b 有轨道/混合）、再被公交圈查过（只有纯公交），
+ * 后一次不能把前一次已经证实的时间冲掉。 */
 function tpNavPut(key, sec, kind, extra) {
-    var e = { s: sec, t: Date.now(), mo: kind | 0 };
-    if (extra) {
-        if (extra.v && extra.v.length) e.v = extra.v;
-        if (isFinite(extra.m) && extra.m > 0) e.m = Math.round(extra.m);
-        if (isFinite(extra.w) && extra.w > 0) e.w = Math.round(extra.w);
+    extra = extra || {};
+    var old = tpNavCache[key] || null;
+    var e = { s: (isFinite(sec) && sec > 0) ? sec : 0, t: Date.now(), mo: kind | 0, q: String(extra.q || '') };
+    var b = Array.isArray(extra.b) ? extra.b.slice(0, 3) : null;
+    if (old && Array.isArray(old.b)) {
+        if (!b) b = [null, null, null];
+        for (var i = 0; i < 3; i++) {
+            if (!(isFinite(b[i]) && b[i] > 0) && isFinite(old.b[i]) && old.b[i] > 0) b[i] = old.b[i];
+        }
     }
+    if (b) e.b = b;
+    // 任一来源是 LEAST_TIME，b 里就含「最快怎么走」，综合圈因此可以复用
+    if (extra.p === 'LT' || (old && old.pl === 'LT')) e.pl = 'LT';
+    else if (extra.p) e.pl = extra.p;
+    if (extra.v && extra.v.length) e.v = extra.v;
+    else if (old && old.v) e.v = old.v;
+    var sameQ = !!(old && old.q && old.q === e.q);
+    if (isFinite(extra.m) && extra.m > 0) e.m = Math.round(extra.m);
+    else if (sameQ && isFinite(old.m)) e.m = old.m;
+    // w 是「下车后走到目标」的时长，与方案构成无关，跨圈也继承
+    if (isFinite(extra.w) && extra.w > 0) e.w = Math.round(extra.w);
+    else if (old && isFinite(old.w)) e.w = old.w;
+    // 负缓存按圈类型分别记时间戳：本次查到了就清掉该类型旧的无解标记，
+    // 否则线网调整后成功的结果会被一条过期的「无解」永久遮蔽
+    var nq = {};
+    if (old && old.nq) Object.keys(old.nq).forEach(function (k) { nq[k] = old.nq[k]; });
+    if (extra.noSol && e.q) nq[e.q] = Date.now();
+    else if (e.q && isFinite(sec) && sec > 0) delete nq[e.q];
+    if (Object.keys(nq).length) e.nq = nq;
     tpNavCache[key] = e;
     var keys = Object.keys(tpNavCache);
     if (keys.length > TP_NAV_CACHE_MAX) {
-        keys.sort(function (a, b) { return (tpNavCache[a].t || 0) - (tpNavCache[b].t || 0); });
+        keys.sort(function (a, b2) { return (tpNavCache[a].t || 0) - (tpNavCache[b2].t || 0); });
         keys.slice(0, keys.length - TP_NAV_CACHE_MAX + 100).forEach(function (k) { delete tpNavCache[k]; });
     }
     saveJson(TP_NAV_CACHE_KEY, tpNavCache);
 }
+/* 旧键带圈类型（6 段），新键已去掉：升级时按去 mode 合并，并把旧 s 落进对应构成，
+ * 免得同一片区把已经查过的站全部重花一遍配额。 */
+(function migrateNavCache() {
+    var changed = false;
+    Object.keys(tpNavCache).forEach(function (k) {
+        var parts = k.split('|');
+        if (parts.length !== 6) return;
+        var old = tpNavCache[k];
+        delete tpNavCache[k];
+        changed = true;
+        var nk = parts.slice(0, 3).concat(parts.slice(4)).join('|');
+        if (!old || tpNavCache[nk]) return;
+        var mo = old.mo | 0;
+        var b = [null, null, null];
+        if (mo >= 0 && mo <= 2 && isFinite(old.s) && old.s > 0) b[mo] = old.s;
+        tpNavCache[nk] = {
+            s: old.s, t: old.t, mo: mo, q: parts[3],
+            pl: parts[3] === 'BUS' ? 'NS' : 'LT', b: b,
+            v: old.v, m: old.m, w: old.w
+        };
+    });
+    if (changed) saveJson(TP_NAV_CACHE_KEY, tpNavCache);
+})();
 
 /* 站点 → 线路表缓存：区域检索一次可覆盖周边多个站点，跨会话复用省配额 */
 var TP_STOP_CACHE_KEY = 'house_tool_transit_stop_cache';
@@ -1557,6 +1647,14 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 refineSkipped: navRefineSkipped, refineLineSkipped: navRefineLineSkipped,
                 hubRefined: navHubRefined, midRefined: navMidRefined, uncalRefined: navUncalRefined,
                 farSkipped: navFarSkipped,
+                nosolHits: navNoSolHits, nosolWrites: navNoSolWrites,
+                // 导航步行速度观测：只做诊断，暂不参与 tpWalkSec。站内换乘步行也混在
+                // 里面，p90 明显低于配置配速说明导航给的是「理想步行」而非绕行估计。
+                walk: navWalkObs.n ? {
+                    n: navWalkObs.n, kmhP50: navWalkPct(0.5), kmhP90: navWalkPct(0.9),
+                    avg: Math.round(navWalkObs.d / navWalkObs.t * 360) / 100,
+                    config: Math.round(currentWalkSpeed() * 10) / 10
+                } : null,
                 biasSamples: navBiasSamples, midAnchors: navMidAnchors, midRaised: navMidRaised,
                 biasStats: navBiasStats, biasByKind: {
                     metro: Math.round(navBiasByKind.metro * 1000) / 1000,
@@ -1977,6 +2075,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
      * 使修正沿线传播到它的下游站。 */
     var navPass = 0, navQueue = [], navFar = [], navIdx = 0;
     var navCalls = 0, navHits = 0, navAnchors = 0, navCap = 0, learnedLines = 0, navBias = 1;
+    // 负缓存：命中「该构成无方案」省下的站数 / 本轮新增确认的条数，写进 __tpDebug 核对
+    var navNoSolHits = 0, navNoSolWrites = 0;
     var navBiasSamples = 0;
     // 地铁/公交的接驳误差量级不同，样本足够时分开取分位；否则退回全局值
     var navBiasByKind = { metro: 1, bus: 1 }, navBiasStats = null;
@@ -2161,7 +2261,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var cands = [];
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
-            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec) return;
+            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec || n.navNoSol) return;
             if (!navExtraKeys[n.via || '']) return;
             if (n.best > horizonSec || n.best < targetSec * 0.82) return;
             cands.push({ key: k, sec: n.best });
@@ -2199,36 +2299,80 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         next();
     }
 
+    /* 导航步行速度观测：只记录、不参与计算。Transfer 的步行段带着 distance/time，
+     * 与配置的 walk_speed 对比几轮，确认分布稳定后再决定要不要用它替换 tpWalkSec。
+     * 按「每次查询一个样本」统计，站内换乘步行也混在里面，故只作量级参考。 */
+    var navWalkObs = { n: 0, d: 0, t: 0, kmh: [] };
+    function navPlanWalk(plan) {
+        var d = 0, t = 0;
+        (plan.segments || []).forEach(function (sg) {
+            var w = sg.walking;
+            if (!w) return;
+            var wd = Number(w.distance) || 0, wt = Number(w.time) || 0;
+            if (wd > 0 && wt > 0) { d += wd; t += wt; }
+        });
+        return (d > 0 && t > 0) ? { d: d, t: t } : null;
+    }
+    function navNoteWalk(plan) {
+        var w = navPlanWalk(plan);
+        if (!w) return;
+        navWalkObs.n++;
+        navWalkObs.d += w.d;
+        navWalkObs.t += w.t;
+        if (navWalkObs.kmh.length < 120) navWalkObs.kmh.push(w.d / w.t * 3.6);
+    }
+    function navWalkPct(p) {
+        var a = navWalkObs.kmh.slice().sort(function (x, y) { return x - y; });
+        if (!a.length) return null;
+        return Math.round(a[Math.floor((a.length - 1) * p)] * 100) / 100;
+    }
+
     function navSearch(node, cb) {
-        // 公交圈用 NO_SUBWAY，保证导航给的也是「只坐公交」的时间；常量取不到时退回字面值
+        // 公交圈用 NO_SUBWAY，保证导航给的也是「只坐公交」的时间；常量取不到时退回字面值。
+        // 地铁圈与综合圈共用 LEAST_TIME——同一份响应本来就含多套方案，缓存才能跨圈复用。
         var policy = want === 'BUS'
             ? ((AMap.TransferPolicy && AMap.TransferPolicy.NO_SUBWAY != null) ? AMap.TransferPolicy.NO_SUBWAY : 5)
             : ((AMap.TransferPolicy && AMap.TransferPolicy.LEAST_TIME != null) ? AMap.TransferPolicy.LEAST_TIME : 0);
+        var policyTag = want === 'BUS' ? 'NS' : 'LT';
         var ts = new AMap.Transfer({ city: searchCity, policy: policy, extensions: 'all' });
         amapRequest('导航复核', {
             run: function (c2) { ts.search(origin, [node.lng, node.lat], c2); },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.plans && r.plans.length); },
             onDone: function (st, r) {
-                if (st !== 'success' || !r || !r.plans || !r.plans.length) { cb(null, 0, null, Infinity); return; }
+                if (st !== 'success' || !r || !r.plans || !r.plans.length) {
+                    // 只有 empty（接口确认无数据）才记负缓存；error（配额/网络）不能记，
+                    // 否则一次临时失败会让这个站半天内不再重试
+                    cb(null, 0, null, Infinity, 0, { q: want, p: policyTag, noSol: st === 'empty' });
+                    return;
+                }
                 // 高德一次会给多套方案，第一套未必真的最快（尤其混了公交时）。同一份响应里
                 // 挑符合圈类型且用时最短的，不额外花调用；所有方案都拿来学逐线速度。
+                // b 按构成记下每类的最快时间：命中缓存的另一个圈类型（如地铁圈↔综合圈）
+                // 只需要这份数据，不必为同一站再花一次请求。
                 var bestSec = Infinity, bestKind = 0, bestPlan = null;
-                var samples = [];
+                var samples = [], b = [null, null, null];
                 r.plans.forEach(function (p) {
                     var sec = Number(p.time);
                     if (!isFinite(sec) || sec <= 0) return;
                     var kind = navPlanKind(p);
+                    // 注意 b[kind] 初值是 null，不能只用 isFinite 判断（isFinite(null) 为真）
+                    if (kind >= 0 && kind <= 2 && (!(b[kind] > 0) || sec < b[kind])) b[kind] = sec;
                     var ok = want === 'SUBWAY' ? kind === 1 : (want === 'BUS' ? kind === 2 : true);
                     if (ok && sec < bestSec) { bestSec = sec; bestKind = kind; bestPlan = p; }
                     navLearn(p, samples);
                     navNoteLines(p);
                 });
-                if (bestSec === Infinity) { cb(null, 0, samples, Infinity, 0); return; }
+                if (bestSec === Infinity) {
+                    // 有响应但没有符合本圈构成的方案：记一条负缓存，有效期半天
+                    cb(null, 0, samples, Infinity, 0, { b: b, q: want, p: policyTag, noSol: true });
+                    return;
+                }
                 var mid = navPlanStops(bestPlan, node.key);
                 // 最后一段步行：navSec 是门到门，mid 是下车站时刻，两者之差就是它。
                 // 外推接驳系数时必须扣掉，否则「真实接驳」里混着最后步行，比值系统性偏大。
                 var tail = (isFinite(mid) && mid > 0) ? Math.max(0, Number(bestPlan.time) - mid) : 0;
-                cb(bestSec, bestKind, samples, mid, tail);
+                navNoteWalk(bestPlan);
+                cb(bestSec, bestKind, samples, mid, tail, { b: b, q: want, p: policyTag });
             }
         });
     }
@@ -2253,7 +2397,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var certain = [], boundary = [];
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
-            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec) return;
+            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec || n.navNoSol) return;
             // 不设窄带：模型偏快时真实 80 分钟的站会被估成 45 分钟，只查「接近目标」的站
             // 永远碰不到它。所有可能进圈的站都进候选池，只是分成两类。
             if (n.best > horizonSec) return;
@@ -2366,37 +2510,47 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     }
 
     /* 缓存命中不是「只剩一个时间」：当初花请求换来的逐线速度样本和方案内锚点一起回放，
-     * 否则热缓存场景每建一次圈都要重新花校准样本去学同样的东西。 */
+     * 否则热缓存场景每建一次圈都要重新花校准样本去学同样的东西。
+     * w（最后一段步行）与方案构成无关——都是下车后走到目标，跨圈照常回放：nearMiss
+     * 外推接驳要扣掉它，缺了会让「真实接驳」系统性偏大；m 是「该方案途经此站的时刻」，
+     * 混合方案的下车时刻对纯地铁圈不可比，只在同圈类型时当 navMid 回放。 */
     function replayNav(e, node) {
         if (!e) return;
         (e.v || []).forEach(function (x) {
             if (tpLearnLineSpeed(cityKey, x[1], x[0], x[2], x[3])) learnedLines++;
         });
-        if (isFinite(e.m) && (!isFinite(node.navMid) || e.m < node.navMid)) node.navMid = e.m;
         if (isFinite(e.w) && e.w > 0) node.navTail = e.w;
+        if (e.q === want && isFinite(e.m) && (!isFinite(node.navMid) || e.m < node.navMid)) node.navMid = e.m;
+    }
+
+    /* 缓存条目 → 节点。返回 true 表示这站已有结论、不需要再发请求：
+     * 有本圈可用的时间就设锚点；确认过「该构成无方案」的负缓存则直接跳过。 */
+    function takeNavHit(e, node) {
+        if (!e) return false;
+        if (navNoSolLive(e, want)) { node.navNoSol = 1; navNoSolHits++; return true; }
+        var sec = navHitSec(e, want);
+        if (!isFinite(sec) || sec <= 0) return false;
+        node.navSec = sec;
+        node.navKind = navHitKind(e, want);
+        replayNav(e, node);
+        navHits++;
+        return true;
     }
 
     /* 先把起点网格内已有的导航缓存灌进节点：缓存里的站即使没进采样名额，也能当锚点、
      * 参与偏差与逐线因子估计；同时把这些站从候选池剔除，名额全给没查过的站。 */
     function applyNavCache() {
-        var hits = 0;
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
             if (!kindAllowed(n.kind) || n.navSec || !isFinite(n.best) || n.best > horizonSec) return;
-            var hit = tpNavGet(tpNavKey(cityKey, origin, n, want));
-            if (!hit) return;
-            n.navSec = hit.s;
-            n.navKind = hit.mo | 0;
-            replayNav(hit, n);
-            hits++;
+            takeNavHit(tpNavGet(tpNavKey(cityKey, origin, n)), n);
         });
-        return hits;
     }
 
     /* true = 已排入异步复核（收敛后再收尾）；false = 无可复核，直接收尾 */
     function verifyBoundary() {
         if (!AMap.Transfer || !searchCity) return false;
-        navHits += applyNavCache();
+        applyNavCache();
         var list = navCandidates();
         navQueue = list.main;
         navFar = list.far;
@@ -2454,27 +2608,28 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 return;
             }
             var node = nodes[navQueue[navIdx++].key];
-            if (!node || node.navSec) continue;
-            var ck = tpNavKey(cityKey, origin, node, want);
-            var hit = tpNavGet(ck);
-            if (hit) {
-                node.navSec = hit.s;
-                node.navKind = hit.mo | 0;
-                replayNav(hit, node);
-                navHits++;
-                continue;
-            }
+            if (!node || node.navSec || node.navNoSol) continue;
+            var ck = tpNavKey(cityKey, origin, node);
+            if (takeNavHit(tpNavGet(ck), node)) continue;
             navCalls++;
             calls++;
             report('导航复核');
             (function (n0, key0) {
-                navSearch(n0, function (sec, kind, samples, mid, tail) {
+                navSearch(n0, function (sec, kind, samples, mid, tail, info) {
                     if (aborted()) { terminate(true); return; }
+                    info = info || {};
                     if (sec) {
                         n0.navSec = sec;
                         n0.navKind = kind | 0;
                         if (tail > 0) n0.navTail = tail;
-                        tpNavPut(key0, sec, kind | 0, { v: samples, m: mid, w: tail });
+                        tpNavPut(key0, sec, kind | 0, {
+                            v: samples, m: mid, w: tail, b: info.b, q: info.q, p: info.p
+                        });
+                    } else if (info.noSol) {
+                        // 确认「本圈构成没有方案」：写短 TTL 负缓存，半天内不再重花配额
+                        navNoSolWrites++;
+                        n0.navNoSol = 1;
+                        tpNavPut(key0, 0, 0, { b: info.b, q: info.q, p: info.p, noSol: true });
                     }
                     pumpNav();
                 });
@@ -2555,7 +2710,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var groups = {}, hubGroups = {}, midDoubt = [], uncalGroups = {}, total = 0;
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
-            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec) return;
+            if (!kindAllowed(n.kind) || !isFinite(n.best) || n.navSec || n.navNoSol) return;
             // 与第二遍松弛同口径：接驳/候车按站点类型的偏差，乘车按该线的修正因子
             var ride = n.rideSec || 0;
             var access = Math.max(0, n.best - ride);
