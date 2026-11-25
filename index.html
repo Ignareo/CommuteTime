@@ -1008,9 +1008,17 @@ var TP_AREA_COVER_MIN = 500;                     // 覆盖半径下限：返回 
 var TP_AREA_COVER_PAD = 200;                     // 覆盖半径在实际最远站之外留的缓冲（米）
 // 兜底先验（含停站）：只有该线路没学到任何导航样本时才用，值取上海地铁/公交的中位水平
 var TP_SPEED = { SUBWAY: 35, BUS: 12 };
-// 逐线速度学习：只吃长区间样本（候车、进出站摊薄后误差小），并限制在合理区间内，
-// 越界说明样本里混进了候车时间（Transfer 的乘车段时间口径各线路不完全一致），宁可不学
-var TP_NAV_LEARN_MIN = { SUBWAY: 2500, BUS: 2000 };       // 米
+/* 逐线速度学习：样本时间取的是 Transfer 单线 segment 的 `sg.time`，而它**含候车**——
+ * 同一段陆家浜路→杨高中路 7.4km，高德给 17 分钟，实际运行 9~10 分钟；发车间隔越长、
+ * 区间越短，摊得越狠。不扣这段固定开销，学到的速度会系统性偏慢 20~30%，建图时又优先
+ * 用学到的值，结果比兜底先验还差：实测上海 18 号线一度学成 26.9km/h（真实 37~47），
+ * 60 分钟圈从航头一路缩到康桥。
+ * 故：① 学之前扣掉 TP_WAIT[mode] 的候车；② 只吃长区间样本（候车摊得薄）；
+ * ③ 口径带版本号，改口径时旧样本整体作废，否则新旧混算永远调不回来。
+ * 区间下限保持 [25, …] 不按上海抬到 32：别的城市有更慢的线与更长的发车间隔，
+ * 学到的慢速度要能被保留，脏样本靠"长度门槛 + 扣候车"过滤而不是靠速度大小。 */
+var TP_SPEED_VER = 2;                                     // 1=直接反算（含候车），2=扣候车
+var TP_NAV_LEARN_MIN = { SUBWAY: 5000, BUS: 3000 };       // 米
 var TP_NAV_SPEED_RANGE = { SUBWAY: [25, 60], BUS: [4, 30] };
 // 导航复核：所有可能进圈的站都参与，估值大的先查（最容易被高估的就是最远那批）
 var TP_NAV_CAP_MAX = 100;
@@ -1216,7 +1224,14 @@ var TP_SPEED_CACHE_MAX = 400;
 var TP_SPEED_CACHE_TTL = 60 * 24 * 3600 * 1000;
 var tpSpeedCache = loadJson(TP_SPEED_CACHE_KEY, {});
 if (!tpSpeedCache || typeof tpSpeedCache !== 'object') tpSpeedCache = {};
-var tpSpeedDirty = false;
+// 旧口径（含候车）的样本直接丢弃：留着既不满足 tpLineSpeed 的版本校验，还白占 LRU 名额。
+// 删过就把 dirty 置上，下次 persist 顺手把清理结果落盘，不必每次加载都重删一遍。
+var tpSpeedDropped = 0;
+Object.keys(tpSpeedCache).forEach(function (k) {
+    var e = tpSpeedCache[k];
+    if (!e || e.v !== TP_SPEED_VER) { delete tpSpeedCache[k]; tpSpeedDropped++; }
+});
+var tpSpeedDirty = tpSpeedDropped > 0;
 
 /* 线路名归一：去掉「地铁/轨道交通/磁浮」前缀、括号尾巴与空白，换乘规划与 LineSearch
  * 的写法不同（「地铁18号线」vs「18号线」），不归一就永远学不到同一行 */
@@ -1231,7 +1246,8 @@ function tpLineSpeed(cityKey, mode, name) {
     var id = tpLineId(mode, name);
     if (!id || !cityKey) return null;
     var e = tpSpeedCache[cityKey + '|' + id];
-    if (!e || !e.d || !e.t || !e.n) return null;
+    // v 是口径版本：旧口径的 d/t 含候车，和现在不可比，按「没学过」处理退回兜底先验
+    if (!e || !e.d || !e.t || !e.n || e.v !== TP_SPEED_VER) return null;
     if (Date.now() - (e.ts || 0) > TP_SPEED_CACHE_TTL) return null;
     var v = e.d / e.t * 3.6;
     var r = TP_NAV_SPEED_RANGE[mode];
@@ -1242,15 +1258,19 @@ function tpLearnLineSpeed(cityKey, mode, name, distM, sec) {
     if (!cityKey || !distM || !sec || !TP_NAV_LEARN_MIN[mode]) return false;
     var id = tpLineId(mode, name);
     if (!id || distM < TP_NAV_LEARN_MIN[mode]) return false;
+    // sg.time 是门到门段用时，含候车（发车间隔越长摊得越多）。扣掉固定候车再折算速度，
+    // 否则学到的值系统性偏慢，建图时又优先用它，比兜底先验还差。
+    var eff = sec - (TP_WAIT[mode] || 0);
+    if (!(eff > 0)) return false;
     var r = TP_NAV_SPEED_RANGE[mode];
-    var v = distM / sec * 3.6;
+    var v = distM / eff * 3.6;
     if (!(v >= r[0] && v <= r[1])) return false;
     var k = cityKey + '|' + id;
     var e = tpSpeedCache[k];
-    if (!e || !e.d || !e.t) e = tpSpeedCache[k] = { d: 0, t: 0, n: 0 };
+    if (!e || !e.d || !e.t || e.v !== TP_SPEED_VER) e = tpSpeedCache[k] = { d: 0, t: 0, n: 0, v: TP_SPEED_VER };
     if (e.n >= 8) { e.d = e.d / 2; e.t = e.t / 2; e.n = Math.ceil(e.n / 2); }
     e.d += distM;
-    e.t += sec;
+    e.t += eff;
     e.n += 1;
     e.ts = Date.now();
     tpSpeedDirty = true;
@@ -1282,7 +1302,8 @@ function tpSpeedSig(city) {
         sum += Math.round(v);
         n++;
     });
-    return n ? (n + 'x' + Math.round(sum / n)) : '0';
+    // 带口径版本：换了学习口径（如扣候车）时签名随之变化，旧几何自动失效
+    return 'v' + TP_SPEED_VER + '|' + (n ? (n + 'x' + Math.round(sum / n)) : '0');
 }
 
 /* ---------- 导航复核结果缓存 ----------
@@ -1319,16 +1340,11 @@ var TP_DEPART_PRESET = {
     'custom-wd': { wk: [1, 2, 3, 4, 5], label: '工作日' },
     'custom-we': { wk: [0, 6], label: '周末' }
 };
-var TP_DEPART_OPTIONS = [
-    ['now', '现在出发'],
-    ['wd-am', '工作日早高峰 08:00'],
-    ['wd-day', '工作日平峰 13:00'],
-    ['wd-pm', '工作日晚高峰 18:00'],
-    ['wd-night', '工作日夜间 22:30'],
-    ['we', '周末 10:00'],
-    ['custom-wd', '自定义时刻 · 工作日'],
-    ['custom-we', '自定义时刻 · 周末']
-];
+// 下拉项由预设表生成，避免「加了预设忘了同步文案」这类不同步
+var TP_DEPART_OPTIONS = [['now', '现在出发']].concat(Object.keys(TP_DEPART_PRESET).map(function (k) {
+    var p = TP_DEPART_PRESET[k];
+    return [k, p.hm ? (p.label + ' ' + p.hm) : ('自定义时刻 · ' + p.label)];
+}));
 var tpDepartPick = 'now';       // 'now' 或 TP_DEPART_PRESET 的键
 var tpDepartTime = '08:00';     // 手填时刻（HH:mm），仅 custom-* 使用
 /* HH:mm 规范化：容忍 8:5 / 8：05 / 前后空格，非法返回 '' */
@@ -1897,6 +1913,19 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             horizon: Math.round(horizonSec / 60),
             caps: { area: areaCap, metro: TP_MAX_LINE_METRO, bus: busCap, nav: navCap },
             lines: { metro: lineMetro, bus: lineBus },
+            // 本次建图实际采用的逐线速度（km/h）：学到的是「扣候车」口径，没学的走兜底先验。
+            // 圈偏小先看这里——18/9 号线一度是 26.9/27.5，比兜底 35 还慢。
+            lineSpeeds: (function () {
+                var o = {};
+                Object.keys(routes).forEach(function (q2) {
+                    (routes[q2] || []).forEach(function (rt2) {
+                        if (!rt2 || !rt2.spd) return;
+                        var nm = String(rt2.name || q2).replace(/[(（].*$/, '');
+                        o[nm] = { kmh: Math.round(rt2.spd * 10) / 10, learned: !!rt2.learned };
+                    });
+                });
+                return o;
+            })(),
             metroGaps: { tried: gapTried, loaded: gapLoaded },
             nav: {
                 calls: navCalls, hits: navHits, anchors: navAnchors, learnedLines: learnedLines,
@@ -2272,9 +2301,13 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var list = routes[q] || [];
         // 接驳/候车按 accessScale；乘车时间优先用逐线修正因子
         var baseScale = accessScale(node);
-        var rideScale = lineScales[q] || baseScale;
         for (var r = 0; r < list.length; r++) {
             var rt = list[r];
+            /* 乘车系数：有逐线因子就用它；没有时——该线速度已经由导航反算过（learned）
+             * 就不再乘接驳系数，速度本身是校准过的，再乘 p60 等于把真实值又拉慢 50%
+             * （实测 18 号线 26.9km/h × 1.5 ≈ 14km/h，60 分钟圈因此硬生生少 6 站）；
+             * 没学到速度的线路仍按 baseScale 保守化，宁可少画也不要漏进圈。 */
+            var rideScale = lineScales[q] || (rt.learned ? 1 : baseScale);
             for (var i = 0; i < rt.keys.length; i++) {
                 if (rt.keys[i] !== node.key) continue;
                 // 从站体走到该线的站台（同名异线的站点坐标可能相距百余米）
@@ -4584,12 +4617,12 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
             ? (clampStationRadius(opts.stationWalkMax) || TP_STATION_RADIUS_MAX)
             : TP_STATION_RADIUS_MAX;
     }
-    // 出发时段随圈快照：缓存/签名按它隔离，标签也要显示本圈算的是哪个时段
+    // 出发时段随圈快照：缓存/签名按它隔离，标签也要显示本圈算的是哪个时段。
+    // 恢复存档沿用圈自己的（老存档没有 departPin = 当时确实是「现在出发」），新建才取当前选择
     var savedBucket = (opts && opts.departBucket) || '';
-    var departBucket = (isTransitMode && dataMode === 'precise')
-        ? (savedBucket || tpDepartPickBucket()) : '';
-    // 钉住的代表时刻（'' = 现在出发）：恢复存档沿用圈自己的，新建才取当前选择
-    var departPin = (isTransitMode && dataMode === 'precise')
+    var useDepart = isTransitMode && dataMode === 'precise';
+    var departBucket = useDepart ? (savedBucket || tpDepartPickBucket()) : '';
+    var departPin = useDepart
         ? (savedBucket ? String((opts && opts.departPin) || '') : tpDepartPickHm()) : '';
     // 恢复/导入时沿用圈保存时的签名：缓存里已有该圈几何就直接装配，不因算法指纹/速度漂移而重算。
     // 但写死时段桶的旧签名不可信，丢弃后按当前时段重算一次（几何写回新签名，只多花这一遍）。
