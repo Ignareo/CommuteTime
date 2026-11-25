@@ -414,8 +414,11 @@ var AMAP_KEY = '';
 var AMAP_CODE = '';
 var MAPBOX_TOKEN = '';
 var PLACEHOLDER_KEY = 'YOUR_KEY_HERE';
-var MAP_CENTER = [121.4997, 31.2397];   // 默认上海陆家嘴（GCJ-02）
-var MAP_ZOOM = 12;
+/* 默认视野是全国而不是某个城市：部署者在 config.yaml 写 map_center 就按配置来，
+ * 没写时由 IP 定位落到用户所在城市（见 initApp 里的 map.getCity），全国通用。 */
+var MAP_CENTER = [108.5, 34.0];         // 全国视野中心（GCJ-02），config.yaml 的 map_center 可覆盖
+var MAP_ZOOM = 5;
+var mapViewConfigured = false;          // config.yaml 是否显式指定了 map_center/map_zoom
 var WALK_SPEED = 4.5;   // 近似步行圈配速 km/h，config.yaml walk_speed 可覆盖
 var RIDE_SPEED = 9;     // 近似骑行圈配速 km/h，config.yaml ride_speed 可覆盖
 
@@ -424,11 +427,12 @@ function parseMapView(centerStr, zoomStr) {
         var parts = centerStr.split(',').map(function (s) { return parseFloat(s.trim()); });
         if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
             MAP_CENTER = parts;
+            mapViewConfigured = true;
         }
     }
     if (zoomStr) {
         var z = parseInt(zoomStr, 10);
-        if (!isNaN(z)) MAP_ZOOM = z;
+        if (!isNaN(z)) { MAP_ZOOM = z; mapViewConfigured = true; }
     }
 }
 
@@ -971,9 +975,10 @@ function buildPreciseRing(center, mode, minutes, onProgress, onDone, ctrl) {
  *      走廊，否则整条地铁沿线都被算作可达。
  * 区间距离按 LineSearch 的线路折线累计（不是站点直线相连），避免弯折线路被低估里程。
  * 步行按 config.yaml 的 walk_speed 并计 TP_DETOUR 绕行系数。线网与常数都不随日期变化，
- * 故缓存签名用固定桶而非日期（学到的逐线速度另算指纹，见 tpSpeedSig）。 */
+ * 故缓存签名用出发时段桶而非具体日期（学到的逐线速度另算指纹，见 tpSpeedSig）。
+ * 时段桶见 tpDepartBucket：Transfer 只能按「调用时刻」规划，圈天然是「现在出发」口径，
+ * 但缓存/几何必须按时段隔离，否则早高峰算出的圈下午会被直接复用。 */
 var TRANSIT_PRECISE_VER = 'tp5';
-var TRANSIT_DEPART_BUCKET = 'wd0830';
 var TP_DETOUR = 1.3;                             // 步行绕行系数（直线 → 实际路径）
 var TP_WAIT = { SUBWAY: 150, BUS: 240 };         // 首次上车候车（秒）
 var TP_PLATFORM = 60;                            // 换乘进出站/站台步行（秒）
@@ -1281,12 +1286,27 @@ var TP_NAV_NOSOL_TTL = 12 * 3600 * 1000;
 var tpNavCache = loadJson(TP_NAV_CACHE_KEY, {});
 if (!tpNavCache || typeof tpNavCache !== 'object') tpNavCache = {};
 
-function tpDayBucket() {
-    var d = new Date().getDay();
-    return (d === 0 || d === 6) ? 'we' : 'wd';
+/* 出发时段桶：高德 Transfer 只能按「调用时刻」规划，精确圈因此天然是「现在出发」口径
+ * （时段会标在圈标签上）。缓存键与几何签名都带上它：早高峰的班次/路况与平峰差异很大，
+ * 全天共用一份样本会让圈在一天之内互相污染。桶取得粗（高峰/平峰/夜间/周末），
+ * 避免「11:05 建的圈 11:35 就失效」式的高频重算。 */
+function tpDepartBucket(d) {
+    d = d || new Date();
+    var day = d.getDay();
+    if (day === 0 || day === 6) return 'we';
+    var m = d.getHours() * 60 + d.getMinutes();
+    if (m >= 420 && m < 570) return 'wd-am';       // 07:00-09:29 早高峰
+    if (m >= 570 && m < 1020) return 'wd-day';     // 09:30-16:59 平峰
+    if (m >= 1020 && m < 1170) return 'wd-pm';     // 17:00-19:29 晚高峰
+    return 'wd-night';                             // 19:30 之后与凌晨
 }
+var TP_DEPART_LABEL = {
+    'we': '周末', 'wd-am': '工作日早高峰', 'wd-day': '工作日平峰',
+    'wd-pm': '工作日晚高峰', 'wd-night': '工作日夜间'
+};
+function tpDepartLabel(b) { return TP_DEPART_LABEL[b] || ''; }
 function tpNavKey(cityKey, origin, node) {
-    return String(cityKey || '') + '|' + tpDayBucket() + '|' +
+    return String(cityKey || '') + '|' + tpDepartBucket() + '|' +
         origin[0].toFixed(3) + ',' + origin[1].toFixed(3) + '|' +
         node.kind + '|' + node.name;
 }
@@ -3794,8 +3814,13 @@ function initApp() {
         document.getElementById('companyInput').value = '';
     });
 
-    // 各插件按需 new 独立实例（并发调用共享实例会互相取消），这里仅做 IP 定位兜底城市名（公交路径规划需要 city 参数）
-    map.getCity(function (info) { if (!cityName && info.city) cityName = info.city; });
+    // 各插件按需 new 独立实例（并发调用共享实例会互相取消），这里做 IP 定位兜底城市名
+    // （公交路径规划需要 city 参数）；没有起点、部署方也没配 map_center 时顺便把视野落到
+    // 用户所在城市，否则全国用户打开就停在默认视野上
+    map.getCity(function (info) {
+        if (!cityName && info.city) cityName = info.city;
+        if (info && info.city && !companies.length && !mapViewConfigured) map.setCity(info.city);
+    });
 
     document.getElementById('addCircleBtn').onclick = onAddCircle;
     // 数据源下拉：实时线网模式支持「地铁+公交」以及单独的地铁/公交；步行/骑行/驾车保持原逻辑
@@ -4107,7 +4132,12 @@ function tpAlgoSig() {
     return _tpAlgoSig;
 }
 
-function circleSig(companyId, mode, minutes, preciseFlag, dataMode) {
+/* 旧版本把出发时段写死成 wd0830，那批几何既不知道是几点算的、也不含后来的线网补齐与
+ * 偏差系数修正，不能继续复用（实测恢复旧存档后，60 分钟圈覆盖了真实 77 分钟的区域）。
+ * 一律视为过期：清缓存、改按当前时段重算一次。 */
+function sigIsStale(sig) { return !!sig && sig.indexOf('|wd0830|') >= 0; }
+
+function circleSig(companyId, mode, minutes, preciseFlag, dataMode, departBucket) {
     var comp = companies[companyId];
     if (!comp || !comp.lnglat) return null;
     var parts = [mode, minutes, comp.lnglat.lng.toFixed(6), comp.lnglat.lat.toFixed(6)];
@@ -4115,11 +4145,11 @@ function circleSig(companyId, mode, minutes, preciseFlag, dataMode) {
         parts.push((mode === 'walk') ? currentWalkSpeed() : currentRideSpeed());
         parts.push(preciseFlag ? '1' : '0');
     } else if (mode.indexOf('mapbox-') !== 0 && dataMode === 'precise') {
-        // 公交/地铁：只有高精度圈加后缀（算法版本 + 出发时间桶 + 步行配速，
+        // 公交/地铁：只有高精度圈加后缀（算法版本 + 出发时段桶 + 步行配速，
         // 后两者都影响可达站点的步行半径）；旧到达圈保持原签名，
         // v3 及更早的存档/方案包/分享链接仍能命中几何缓存。
         // 逐线速度指纹也进签名：学到新线路/运营图调整后，旧几何必须失效
-        parts.push('precise', TRANSIT_PRECISE_VER, TRANSIT_DEPART_BUCKET, currentWalkSpeed(),
+        parts.push('precise', TRANSIT_PRECISE_VER, departBucket || tpDepartBucket(), currentWalkSpeed(),
             TP_STATION_RADIUS_MAX, tpSpeedSig(comp.city || cityName), tpAlgoSig());
     }
     return parts.join('|');
@@ -4135,6 +4165,8 @@ function loadGeomCache() {
         Object.keys(o).forEach(function (k) {
             var e = o[k];
             if (!e || !e.g || !e.t || (now - e.t) > GEOM_CACHE_TTL) { changed = true; return; }
+            // 写死时段桶的旧几何不可信（见 sigIsStale），启动时顺手清掉
+            if (sigIsStale(k)) { changed = true; return; }
             geomCache[k] = e;
         });
         var keys = Object.keys(geomCache).sort(function (a, b) { return geomCache[a].t - geomCache[b].t; });
@@ -4334,14 +4366,20 @@ function addCircleFrom(companyId, mode, minutes, skipSave, opts) {
             ? (clampStationRadius(opts.stationWalkMax) || TP_STATION_RADIUS_MAX)
             : TP_STATION_RADIUS_MAX;
     }
-    // 恢复/导入时沿用圈保存时的签名：缓存里已有该圈几何就直接装配，不因算法指纹/速度漂移而重算
-    var geomSig = (opts && opts.geomSig) || circleSig(companyId, mode, minutes, precise, dataMode);
+    // 出发时段随圈快照：缓存/签名按它隔离，标签也要显示本圈算的是哪个时段
+    var departBucket = (isTransitMode && dataMode === 'precise')
+        ? ((opts && opts.departBucket) || tpDepartBucket()) : '';
+    // 恢复/导入时沿用圈保存时的签名：缓存里已有该圈几何就直接装配，不因算法指纹/速度漂移而重算。
+    // 但写死时段桶的旧签名不可信，丢弃后按当前时段重算一次（几何写回新签名，只多花这一遍）。
+    var savedSig = (opts && opts.geomSig) || '';
+    if (sigIsStale(savedSig)) savedSig = '';
+    var geomSig = savedSig || circleSig(companyId, mode, minutes, precise, dataMode, departBucket);
     var circle = {
         id: ++circleSeq,
         companyId: companyId,
-        label: circleLabel(comp, mode, minutes, !isTransit && !precise, precise, 0, dataMode, stationWalkMax),
+        label: circleLabel(comp, mode, minutes, !isTransit && !precise, precise, 0, dataMode, stationWalkMax, departBucket),
         mode: mode, minutes: minutes, color: color, approx: !isTransit && !precise, precise: precise,
-        dataMode: dataMode, stationWalkMax: stationWalkMax,
+        dataMode: dataMode, stationWalkMax: stationWalkMax, departBucket: departBucket,
         geomSig: geomSig,
         polygons: [], overlays: [], visible: true, areaM2: 0
     };
@@ -4776,11 +4814,14 @@ function fmtArea(m2) {
     return Math.round(m2) + 'm²';
 }
 
-function circleLabel(comp, mode, minutes, approx, precise, areaM2, dataMode, stationWalkMax) {
+function circleLabel(comp, mode, minutes, approx, precise, areaM2, dataMode, stationWalkMax, departBucket) {
     var s = comp.name + ' · ' + MODE_LABEL[mode] + ' ' + minutes + ' 分钟' + (approx ? '(近似)' : (precise ? '(路网)' : ''));
     var isTransit = (mode !== 'walk' && mode !== 'ride' && mode.indexOf('mapbox-') !== 0);
     if (isTransit) {
-        s += (dataMode === 'precise') ? '(实时)' : '(旧数据)';
+        // 时段是「现在出发」的口径：Transfer 只按调用时刻规划，标出来避免用户拿早高峰的圈
+        // 当全天结论；旧存档没有 departBucket 就只写「实时」
+        var dep = (dataMode === 'precise') ? tpDepartLabel(departBucket) : '';
+        s += (dataMode === 'precise') ? ('(实时' + (dep ? '·' + dep : '') + ')') : '(旧数据)';
         if (dataMode === 'precise' && stationWalkMax) s += ' · 下车后步行上限' + stationWalkMax + 'm';
     }
     var a = fmtArea(areaM2);
@@ -4793,7 +4834,7 @@ function refreshCircleLabel(c) {
     var comp = companies[c.companyId];
     if (!comp) return;
     c.areaM2 = circleAreaM2(c);
-    c.label = circleLabel(comp, c.mode, c.minutes, c.approx, c.precise, c.areaM2, c.dataMode, c.stationWalkMax);
+    c.label = circleLabel(comp, c.mode, c.minutes, c.approx, c.precise, c.areaM2, c.dataMode, c.stationWalkMax, c.departBucket);
     renderCircleList();
 }
 
@@ -6702,7 +6743,8 @@ function buildState() {
             return {
                 id: c.id, companyId: c.companyId, mode: c.mode, minutes: c.minutes,
                 color: c.color, visible: c.visible, precise: !!c.precise,
-                dataMode: c.dataMode || '', geomSig: c.geomSig || '', stationWalkMax: c.stationWalkMax || 0
+                dataMode: c.dataMode || '', geomSig: c.geomSig || '', stationWalkMax: c.stationWalkMax || 0,
+                departBucket: c.departBucket || ''
             };
         })
     };
@@ -6815,7 +6857,8 @@ function applyState(state, merge) {
     var existingSigs = {};
     if (merge) {
         circles.forEach(function (c) {
-            existingSigs[c.geomSig || circleSig(c.companyId, c.mode, c.minutes, !!c.precise, c.dataMode)] = true;
+            var sk0 = sigIsStale(c.geomSig) ? '' : (c.geomSig || '');
+            existingSigs[sk0 || circleSig(c.companyId, c.mode, c.minutes, !!c.precise, c.dataMode, c.departBucket)] = true;
         });
     }
     var savedCircles = state.circles || [];
@@ -6830,12 +6873,13 @@ function applyState(state, merge) {
         // 优先用圈保存时的签名：几何就是以它为键存进缓存的。若改用当前参数重算签名，
         // 代码指纹/速度一变就会 miss，把明明已缓存的圈排队重算一次（白耗配额）。
         // 旧存档没有 geomSig 才退回当前签名（一次性 miss，重建后会写入 state）。
-        var sig = c.geomSig || circleSig(cid, c.mode, c.minutes, preciseFlag, dataMode);
+        var sig = sigIsStale(c.geomSig) ? '' : (c.geomSig || '');
+        sig = sig || circleSig(cid, c.mode, c.minutes, preciseFlag, dataMode, c.departBucket);
         if (merge) {
             if (existingSigs[sig]) { res.skipped++; return; }
             existingSigs[sig] = true;
         }
-        var opts = { color: c.color, dataMode: dataMode, geomSig: sig };
+        var opts = { color: c.color, dataMode: dataMode, geomSig: sig, departBucket: c.departBucket || '' };
         if (c.stationWalkMax) opts.stationWalkMax = c.stationWalkMax;
         if (c.precise !== undefined) opts.precise = !!c.precise;   // v2 及更早无此字段 → 沿用勾选框
         if (typeof LZString !== 'undefined' && geomCache[sig] && geomCache[sig].g) {
@@ -6915,7 +6959,8 @@ function collectGeomForExport(state) {
     var out = {};
     (state.circles || []).forEach(function (c) {
         if (!companies[c.companyId]) return;
-        var storedKey = c.geomSig || circleSig(c.companyId, c.mode, c.minutes, !!c.precise, c.dataMode);
+        var k0 = sigIsStale(c.geomSig) ? '' : (c.geomSig || '');
+        var storedKey = k0 || circleSig(c.companyId, c.mode, c.minutes, !!c.precise, c.dataMode, c.departBucket);
         var e = geomCache[storedKey];
         if (!e || !e.g) return;
         out[storedKey] = { t: e.t, g: e.g };
