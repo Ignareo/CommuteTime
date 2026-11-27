@@ -6270,10 +6270,13 @@ function tpUcBlocked(cityKey, name, includeWeak) {
 }
 function tpUcMark(kind, cityKey, name, stopName) {
     if (!cityKey || !name || !tpUcState[kind]) return;
-    tpUcState[kind][cityKey + '|' + tpUcKey(name)] = 1;
-    /* 分期段只拦自己；同时记下它的车站名。盲查整条线时，只有返回站序真的包含
-     * 这些在建站，才判定「整条线还没开通」（如 20号线一期东段），否则放行运营主线。 */
-    if (stopName && tpUcPhase(name)) {
+    /* 名称/状态证据（无 stopName）直接拦整条线；站点地址证据只记在建站名，分期段
+     * 同时记分期键。整条线是否拦由返回站序是否包含这些在建站决定——否则
+     * 「(在建)18号线」这种泛化地址会把运营中的 18 号线主线一起拉黑。 */
+    if (!stopName || tpUcPhase(name)) {
+        tpUcState[kind][cityKey + '|' + tpUcKey(name)] = 1;
+    }
+    if (stopName) {
         var bk = cityKey + '|' + tpUcBaseKey(name);
         (tpUcState.phaseStops[bk] || (tpUcState.phaseStops[bk] = {}))[tpUcStopName(stopName)] = 1;
     }
