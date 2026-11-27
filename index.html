@@ -1267,7 +1267,7 @@ function tpLineNorm(name) {
  * 浦江线是胶轮 APM，名字里没有「地铁/轨道」，高德还可能把它标成 BUS；不在这里
  * 显式识别，整条线会被当成公交，在地铁圈里直接丢掉。 */
 function tpRailName(name, type) {
-    return /地铁|轨道|轻轨|单轨|有轨电车|导轨式|磁浮|磁悬浮|浦江线|胶轮|捷运|APM/i
+    return /地铁|轨道|轻轨|单轨|有轨电车|导轨式|磁浮|磁悬浮|浦江线|胶轮|APM/i
         .test(String(name || '') + String(type || ''));
 }
 /* 速度制式比建图方式更细：磁浮与轻轨都按轨道建图，但旅速范围完全不同。
@@ -1277,7 +1277,7 @@ function tpSpeedClass(mode, name, type) {
     var label = String(name || '') + String(type || '');
     if (/磁浮|磁悬浮/.test(label)) return 'MAGLEV';
     // 浦江线/APM 胶轮捷运旅速约 30km/h，与轻轨同档，不能套普通地铁 35~120 的范围
-    if (/浦江线|胶轮|捷运|APM|有轨电车|轻轨|单轨|导轨式/i.test(label)) return 'LIGHTRAIL';
+    if (/浦江线|胶轮|APM|有轨电车|轻轨|单轨|导轨式/i.test(label)) return 'LIGHTRAIL';
     return mode === 'BUS' ? 'BUS' : 'SUBWAY';
 }
 function tpSpeedKeyInfo(cityKey, mode, name, type) {
@@ -1382,8 +1382,11 @@ function tpSpeedInfoFromEntry(e, cls, bucket) {
         source = 'fit';
     } else {
         var implied = [];
+        /* 公交的薄样本（回归不稳）不能假设时间一定含候车：只扣最小候车，宁可把速度
+         * 估慢，也别让 1~3 个样本把公交估快。地铁/磁浮旅速稳定，仍按先验候车扣。 */
+        var deduct = cls === 'BUS' ? (spec.waitMin || 0) : spec.wait;
         for (var i = 0; i < samples.length; i++) {
-            var eff = samples[i][1] - spec.wait;
+            var eff = samples[i][1] - deduct;
             if (eff > 30) implied.push(samples[i][0] / eff * 3.6);
         }
         speed = tpMedian(implied);
@@ -2420,8 +2423,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         /* 编号线（1号线）要加「地铁」前缀；浦江线/磁浮线这类专名线路加前缀反而
          * 查不到，原样查询。已带「地铁/轨道交通」前缀的保持不变。 */
         if (kind === 'metro') {
-            // 去掉「(二期)」「(莘庄--富锦路)」这类方向和分期后缀，保证与线路缓存同键
-            nm = nm.replace(/[（(].*$/, '');
+            // 去掉「(二期)」「(莘庄--富锦路)」这类方向和分期后缀，保证与线路缓存同键；
+            // 只剥「名字后面的括号」，别把本身就以括号开头的片段整个吃掉
+            nm = nm.replace(/^(.+?)[（(].*$/, '$1');
+            if (!nm) return '';
             if (/^(地铁|轨道交通|轨道)/.test(nm)) return nm;
             return /\d+号线/.test(nm) ? '地铁' + nm : nm;
         }
@@ -6234,7 +6239,7 @@ var tpUcState = { strong: {}, weak: {}, phaseStops: {} };
  * 18 号线主线一起拉黑。上海 18 号线二期在建、主线正常运营，实测整条 18 号线消失后
  * 银南大厦连御桥/下沙都到不了。 */
 function tpUcBaseKey(name) {
-    var nm = tpLineNorm(name);
+    var nm = tpLineNorm(name) || String(name || '').replace(/\s+/g, '');
     var m = /(\d+)号线/.exec(nm);
     return m ? ('n:' + m[1]) : nm;   // 20号线东延伸 / 地铁20号线 → n:20
 }
