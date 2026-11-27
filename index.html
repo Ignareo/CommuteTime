@@ -1557,10 +1557,15 @@ function tpDepartPickBucket() {
     return tpDepartPick === 'now' ? tpDepartBucket() : tpDepartPick;
 }
 /* 时段桶 + 钉住时刻 → 缓存键/几何签名里的时段片段。钉住时才带 @HH:mm：
- * 「现在出发」保持裸桶，旧缓存继续命中；不同分钟各自成键，精度不被别时刻的样本抹平。 */
+ * 不同分钟各自成键，精度不被别时刻的样本抹平。
+ * 夜间「现在出发」按小时隔离（wd-night@h23）：末班/首班/夜班车间隔差异极大，
+ * 整夜共用一个桶会让 23:30 的无解/慢班样本被 06:00 的圈复用。白天班次密度稳定，
+ * 保持裸桶以兼容旧缓存。 */
 function tpDepartTag(bucket, pin) {
     var b = bucket || tpDepartBucket();
-    return pin ? (b + '@' + pin) : b;
+    if (pin) return b + '@' + pin;
+    if (b === 'wd-night') return b + '@h' + ('0' + new Date().getHours()).slice(-2);
+    return b;
 }
 /* 钉住时段的出发日期：最近一个「星期几符合且时刻还没过」的日子。
  * 高德只接受有限的未来日期，逐日最多找 8 天；最坏（周五夜间→周一）也只要 3 天。 */
@@ -4628,8 +4633,8 @@ function tpAlgoSig() {
  * 一律视为过期：清缓存、改按当前时段重算一次。 */
 function sigIsStale(sig) { return !!sig && sig.indexOf('|wd0830|') >= 0; }
 
-/* departTag = tpDepartTag(桶, 钉住时刻)：钉住时才带 @HH:mm，'现在出发' 只有桶名，
- * 与旧缓存键保持一致（老存档的圈 departPin 为空，签名不变）。 */
+/* departTag = tpDepartTag(桶, 钉住时刻)：钉住时带 @HH:mm，夜间「现在出发」带 @hHH，
+ * 其余保持裸桶以兼容旧缓存。 */
 function circleSig(companyId, mode, minutes, preciseFlag, dataMode, departTag) {
     var comp = companies[companyId];
     if (!comp || !comp.lnglat) return null;
