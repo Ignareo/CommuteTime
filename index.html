@@ -995,7 +995,6 @@ function buildPreciseRing(center, mode, minutes, onProgress, onDone, ctrl) {
  * 否则早高峰算出的圈下午会被直接复用。 */
 var TRANSIT_PRECISE_VER = 'tp5';
 var TP_DETOUR = 1.3;                             // 步行绕行系数（直线 → 实际路径）
-var TP_WAIT = { SUBWAY: 150, BUS: 240 };         // 首次上车候车（秒）
 var TP_PLATFORM = 60;                            // 换乘进出站/站台步行（秒）
 var TP_XFER_RADIUS = 400;                        // 站间步行换乘的最大直线距离（米）
 /* 站点线路表区域检索：一次 PlaceSearch 最多回 pageSize 条 POI，而地铁站 POI 里八成是
@@ -1696,7 +1695,15 @@ function navHitKind(e, want) {
 function tpNavPut(key, sec, kind, extra) {
     extra = extra || {};
     var old = tpNavCache[key] || null;
-    var e = { s: (isFinite(sec) && sec > 0) ? sec : 0, t: Date.now(), mo: kind | 0, q: String(extra.q || '') };
+    var ok = isFinite(sec) && sec > 0;
+    var qNow = String(extra.q || '');
+    /* mo/q 是「采信方案」的属性，w/m 必须与那套方案成对。无解或失败的写入不能动它们，
+     * 否则跨圈复用会拿另一套方案的最后步行去扣，把到站时刻算早；负缓存另走 nq。 */
+    var e = {
+        s: ok ? sec : 0, t: Date.now(),
+        mo: ok ? (kind | 0) : (old ? (old.mo | 0) : 0),
+        q: ok ? qNow : ((old && old.q) || qNow)
+    };
     var b = Array.isArray(extra.b) ? extra.b.slice(0, 3) : null;
     if (old && Array.isArray(old.b)) {
         if (!b) b = [null, null, null];
@@ -1710,18 +1717,23 @@ function tpNavPut(key, sec, kind, extra) {
     else if (extra.p) e.pl = extra.p;
     if (extra.v && extra.v.length) e.v = extra.v;
     else if (old && old.v) e.v = old.v;
-    var sameQ = !!(old && old.q && old.q === e.q);
+    // m 只跟「同一圈类型」的旧值继承：q 一变说明采信的是另一套方案，旧 m 不再可比。
+    // 无解写入没有新方案，保留旧 m 才与保留下来的 mo/q 成对。
+    var sameQ = !!(old && old.q && old.q === qNow);
+    // 成功写入时构成也变了（mo 不同），旧 m/w 属于另一套方案：navTailUsable 只看
+    // mo 与命中构成是否一致，继承下来会拿旧方案的尾段/下车时刻扣新方案。
+    var sameKind = !!(old && (old.mo | 0) === (kind | 0));
     if (isFinite(extra.m) && extra.m > 0) e.m = Math.round(extra.m);
-    else if (sameQ && isFinite(old.m)) e.m = old.m;
-    // w 是「下车后走到目标」的时长，与方案构成无关，跨圈也继承
+    else if (old && (!ok || (sameQ && sameKind)) && isFinite(old.m)) e.m = old.m;
+    // w 是「下车后走到目标」的时长，与方案构成无关，跨圈也继承；成功写入构成变了时不留
     if (isFinite(extra.w) && extra.w > 0) e.w = Math.round(extra.w);
-    else if (old && isFinite(old.w)) e.w = old.w;
+    else if (old && (!ok || sameKind) && isFinite(old.w)) e.w = old.w;
     // 负缓存按圈类型分别记时间戳：本次查到了就清掉该类型旧的无解标记，
     // 否则线网调整后成功的结果会被一条过期的「无解」永久遮蔽
     var nq = {};
     if (old && old.nq) Object.keys(old.nq).forEach(function (k) { nq[k] = old.nq[k]; });
-    if (extra.noSol && e.q) nq[e.q] = Date.now();
-    else if (e.q && isFinite(sec) && sec > 0) delete nq[e.q];
+    if (extra.noSol && qNow) nq[qNow] = Date.now();
+    else if (qNow && ok) delete nq[qNow];
     if (Object.keys(nq).length) e.nq = nq;
     tpNavCache[key] = e;
     var keys = Object.keys(tpNavCache);
@@ -2115,15 +2127,16 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         debugInfo({ error: msg || '' });
         onDone(null, false, msg, stats);
     }
+    /* 圈类型 → 允许的站点类型与乘车方式。两处过滤共用同一份判断，避免只改一处：
+     * SUBWAY 只认地铁站与轨道方案，BUS 只认公交站与公交方案，'SUBWAY,BUS' 两者都要。 */
+    var noBus = want === 'SUBWAY', noMetro = want === 'BUS';
     function kindAllowed(kind) {
-        if (want === 'SUBWAY') return kind === 'metro';
-        if (want === 'BUS') return kind === 'bus';
-        return kind === 'metro' || kind === 'bus';
+        return kind === 'metro' ? !noMetro : (kind === 'bus' ? !noBus : false);
     }
     function modeAllowed(m) {
-        if (want === 'SUBWAY') return m === 'SUBWAY';
-        if (want === 'BUS') return m === 'BUS';
-        return true;
+        if (m === 'SUBWAY') return !noMetro;
+        if (m === 'BUS') return !noBus;
+        return !noBus && !noMetro;
     }
     function report(text) {
         if (!onProgress) return;
@@ -2482,7 +2495,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 if (rt.keys[i] !== node.key) continue;
                 // 从站体走到该线的站台（同名异线的站点坐标可能相距百余米）
                 var board = (tpWalkSec(tpDist(rt.pos[i], [node.lng, node.lat]), walkMs) + TP_PLATFORM) * baseScale;
-                var t0 = sec + (isFinite(rt.wait) ? rt.wait : TP_WAIT[rt.mode]) * waitScale + board;
+                // 候车由 buildRoutes 保证是有限数（学到的逐线值或该制式先验），不必再兜底
+                var t0 = sec + rt.wait * waitScale + board;
                 if (t0 >= horizonSec) continue;
                 for (var j = i + 1; j < rt.keys.length; j++) {
                     var ride = rt.cum[j] - rt.cum[i];
@@ -2508,13 +2522,14 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     }
 
     function expand(node, sec) {
+        // 圈类型不允许的站点不会有估值；这里判一次就够，不必每查一条线路重复判
+        if (!kindAllowed(node.kind)) { relaxWalk(node, sec); step(); return; }
         var names = Object.keys(node.lines);
         var i = 0;
         function next() {
             if (aborted()) { terminate(true); return; }
             if (i >= names.length) { relaxWalk(node, sec); step(); return; }
             var nm = names[i++];
-            if (!kindAllowed(node.kind)) { next(); return; }
             var q = lineQuery(node.kind, nm);
             if (!q) { next(); return; }
             if (queryState[q] === 'failed') { next(); return; }
@@ -3199,6 +3214,22 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         if (isFinite(n.navMid) && n.navMid < a) a = n.navMid;
         return a;
     }
+    /* 该站的到站时刻：复核过就用导航，没复核就用模型 */
+    function arrivalOf(n) { return navTrusted(n) ? navArriveSec(n) : n.best; }
+
+    /* 偏差分位用的三个小工具：放在 computeNavBias 外面，省得每次调用都重建一遍 */
+    function tpBiasQuantile(arr, p) {
+        if (!arr.length) return NaN;
+        var a = arr.slice().sort(function (x, y) { return x - y; });
+        return a[Math.floor((a.length - 1) * p)];
+    }
+    function tpBiasPct(arr, p) {
+        var q = tpBiasQuantile(arr, p);
+        return isFinite(q) ? Math.round(q * 1000) / 1000 : null;
+    }
+    function tpClampBias(v) {
+        return Math.max(TP_NAV_BIAS_MIN, Math.min(TP_NAV_BIAS_MAX, v));
+    }
 
     /* 从「导航 / 模型」比值反推整体偏差：未能逐个复核的站也要按同一系数收紧。
      * 取 60% 分位而不是最大值，避免个别导航绕路样本把整个圈压得过小；样本不足时
@@ -3217,31 +3248,20 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             all.push(r);
             if (byKind[n.kind]) byKind[n.kind].push(r);
         });
-        function quantile(arr, p) {
-            if (!arr.length) return NaN;
-            var a = arr.slice().sort(function (x, y) { return x - y; });
-            return a[Math.floor((a.length - 1) * p)];
-        }
-        function pct(arr, p) {
-            var q = quantile(arr, p);
-            return isFinite(q) ? Math.round(q * 1000) / 1000 : null;
-        }
-        function clampBias(v) {
-            return Math.max(TP_NAV_BIAS_MIN, Math.min(TP_NAV_BIAS_MAX, v));
-        }
         navBiasSamples = all.length;
         if (all.length >= 6) {
-            navBias = clampBias(quantile(all, 0.6));
+            navBias = tpClampBias(tpBiasQuantile(all, 0.6));
         } else if (navCalls > 0) {
             navBias = TP_NAV_BIAS_DEFAULT;
         }
         // 单类样本至少 8 个才独立取分位，否则沿用全局值
-        navBiasByKind.metro = byKind.metro.length >= 8 ? clampBias(quantile(byKind.metro, 0.6)) : navBias;
-        navBiasByKind.bus = byKind.bus.length >= 8 ? clampBias(quantile(byKind.bus, 0.6)) : navBias;
+        navBiasByKind.metro = byKind.metro.length >= 8 ? tpClampBias(tpBiasQuantile(byKind.metro, 0.6)) : navBias;
+        navBiasByKind.bus = byKind.bus.length >= 8 ? tpClampBias(tpBiasQuantile(byKind.bus, 0.6)) : navBias;
         navBiasStats = {
-            n: all.length, p50: pct(all, 0.5), p60: pct(all, 0.6), p75: pct(all, 0.75), p90: pct(all, 0.9),
-            metro: { n: byKind.metro.length, p60: pct(byKind.metro, 0.6) },
-            bus: { n: byKind.bus.length, p60: pct(byKind.bus, 0.6) }
+            n: all.length, p50: tpBiasPct(all, 0.5), p60: tpBiasPct(all, 0.6),
+            p75: tpBiasPct(all, 0.75), p90: tpBiasPct(all, 0.9),
+            metro: { n: byKind.metro.length, p60: tpBiasPct(byKind.metro, 0.6) },
+            bus: { n: byKind.bus.length, p60: tpBiasPct(byKind.bus, 0.6) }
         };
     }
 
@@ -3712,13 +3732,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         Object.keys(nodes).forEach(function (k) {
             var n = nodes[k];
             if (!kindAllowed(n.kind)) return;
-            // 复核过的站以导航为准；没复核的站按样本反推的偏差系数收紧——模型系统性偏快时，
-            // 没来得及复核的站不能原样按模型估值进圈
-            var trusted = navTrusted(n);
             // 复核过的站以「导航到站时刻」为准（下车那刻，扣掉高德的下车后步行）；没复核的站
             // 按样本反推的偏差系数收紧——模型系统性偏快时，没来得及复核的站不能原样进圈。
             // navMid 是方案里途经该站的下车时刻，直接导航偶尔给出更慢的一套，两者取更优。
-            var arr = trusted ? navArriveSec(n) : n.best;
+            var trusted = navTrusted(n);
+            var arr = arrivalOf(n);
             if (!isFinite(arr) || arr > targetSec) return;
             // 到站即下车：剩余时间全部折成「从这里出发的步行半径」，不沿用高德的出站步行
             var remain = Math.max(0, targetSec - arr);
@@ -3755,7 +3773,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             var n = nodes[k];
             if (!kindAllowed(n.kind) || !isFinite(n.best)) return;
             var trusted = navTrusted(n);
-            var arr = trusted ? navArriveSec(n) : n.best;
+            var arr = arrivalOf(n);
             if (!isFinite(arr) || arr <= targetSec || arr > targetSec * 1.4) return;
             rejected.push({
                 name: n.name,
