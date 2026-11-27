@@ -1089,7 +1089,7 @@ var TP_MAX_LINE_BUS = 22;                        // 公交线路检索次数上�
  * 漏掉 15 号线，双柏路因此根本不在节点表里，圈再怎么调都覆盖不到）。缺哪号就补查哪号，
  * 一次 LineSearch 拿到整条线站序，比盲查区域便宜得多；沿途换乘站直接写回已知线路，
  * 第二遍松弛就能传播过去。 */
-var TP_MAX_METRO_GAPS = 10;                      // 编号缺口补线上限（每条 1 次 LineSearch，缓存命中不耗）
+var TP_MAX_METRO_GAPS = 20;                      // 编号缺口补线上限（每条 1 次 LineSearch，缓存命中不耗）
 // 公交站线路表补查：公交线路在中途交叉，只从起点附近取线路永远发现不了横向换乘线
 // （实测三湘海尚→宝华城市花园要 151 路换 108 路，108 路只在远端才接得上）。
 // 首遍收敛后按「单线路 + 可达且留有余量 + 离起点远」挑少量公交站补查，独立预算；
@@ -1226,6 +1226,7 @@ var tpLineCache = tpMakeLzCache('house_tool_transit_line_cache', 160, 30 * 24 * 
  * 30 天内不再盲试不存在的线（19/20 这类），也保证每圈都能补齐已知最大编号内的空号。 */
 var TP_METRO_MAX_KEY = 'house_tool_metro_max';
 var TP_METRO_MAX_TTL = 30 * 24 * 3600 * 1000;
+var TP_METRO_NONE_TTL = 7 * 24 * 3600 * 1000;   // 「该编号确实没有线路」的负面缓存，7 天后重试
 var tpMetroMax = loadJson(TP_METRO_MAX_KEY, {});
 if (!tpMetroMax || typeof tpMetroMax !== 'object') tpMetroMax = {};
 
@@ -2419,6 +2420,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         /* 编号线（1号线）要加「地铁」前缀；浦江线/磁浮线这类专名线路加前缀反而
          * 查不到，原样查询。已带「地铁/轨道交通」前缀的保持不变。 */
         if (kind === 'metro') {
+            // 去掉「(二期)」「(莘庄--富锦路)」这类方向和分期后缀，保证与线路缓存同键
+            nm = nm.replace(/[（(].*$/, '');
             if (/^(地铁|轨道交通|轨道)/.test(nm)) return nm;
             return /\d+号线/.test(nm) ? '地铁' + nm : nm;
         }
@@ -2445,11 +2448,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             } else {
                 var f0 = tpFilterLineVariants(cityKey, q, hit, gap, false);
                 noteRejected(f0);
-                cb(f0.list.length ? f0.list : null);
+                cb(f0.list.length ? f0.list : null, 'filtered');
                 return;
             }
         }
-        if (!AMap.LineSearch || !searchCity) { cb(null); return; }
+        if (!AMap.LineSearch || !searchCity) { cb(null, 'error'); return; }
         amapRequest('线路查询', {
             run: function (c2) {
                 var ls = new AMap.LineSearch({ city: searchCity, extensions: 'all', pageSize: 20, pageIndex: 1 });
@@ -2457,7 +2460,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.lineInfo && r.lineInfo.length); },
             onDone: function (st, result) {
-                if (st !== 'success') { cb(null); return; }
+                if (st !== 'success') { cb(null, 'error'); return; }
                 var out = [];
                 (result.lineInfo || []).forEach(function (it) {
                     var stops = normalizeLineStops(it.via_stops);
@@ -2475,11 +2478,12 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     if (it.etime || it.end_time) v.etime = it.etime || it.end_time;
                     out.push(v);
                 });
-                if (!out.length) { cb(null); return; }
+                // 请求完成但完全没有线路：给编号缺口做负面缓存，避免每次建圈重花请求
+                if (!out.length) { cb(null, 'empty'); return; }
                 var f = tpFilterLineVariants(cityKey, q, out, gap, true);
                 noteRejected(f);
                 // 全被拒时不写空缓存：弱证据可能误判「只是缺时刻数据」的真实线路
-                if (!f.list.length) { cb(null); return; }
+                if (!f.list.length) { cb(null, 'filtered'); return; }
                 tpLineCache.set(ck, f.list);
                 cb(f.list);
             }
@@ -2706,6 +2710,12 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var navBiasByKind = { metro: 1, bus: 1 }, navBiasStats = null;
     var maxNavScale = Math.max(TP_NAV_BIAS_MAX, TP_LINE_BIAS_MAX);
     function biasFor(kind) { return navBiasByKind[kind] || navBias || 1; }
+    /* 与第二遍松弛一致：该站路径全部由已校准线路组成时，乘车时间不再乘偏差系数；
+     * 含未校准线路才保守放大。近失分组的估值必须用同一口径，否则已校准线路上的站
+     * 会被高估后提前剪掉，复核名额分不到真正的边界站。 */
+    function rideScaleFor(n) {
+        return lineScales[n.via] || (n.sure !== false ? 1 : biasFor(n.kind));
+    }
     var navRefined = false;
     // 候选剪枝 / 校准样本 / 近失分组 / 远端跳过的统计，写进 __tpDebug 便于核对预算
     var navPruned = 0, navCal = 0, navRefineGroups = 0, navRefineSkipped = 0, navFarSkipped = 0;
@@ -3408,13 +3418,13 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 var aRide = a.rideSec || 0;
                 var aAccess = Math.max(0, a.best - aRide);
                 // 真实接驳 = 导航到站时刻（已扣下车后步行）- 该线缩放后的乘车；口径与 aAccess 对齐
-                var aReal = navArriveSec(a) - aRide * (lineScales[a.via] || biasFor(a.kind));
+                var aReal = navArriveSec(a) - aRide * rideScaleFor(a);
                 if (aAccess >= 180 && aReal > 0) {
                     var r = aReal / aAccess;
                     if (isFinite(r)) accScale = Math.max(TP_NAV_BIAS_MIN, Math.min(TP_NAV_BIAS_MAX, r));
                 }
             }
-            var est = access * accScale + ride * (lineScales[n.via] || biasFor(n.kind));
+            var est = access * accScale + ride * rideScaleFor(n);
             /* 方案内锚点已证明至少 navMid 分钟、模型却仍在圈内：模型可能虚构了更快的
              * 换乘路径，这类站不查就会原样漏进圈。 */
             if (isFinite(n.navMid) && n.navMid > targetSec && n.best <= targetSec) {
@@ -3692,14 +3702,22 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
      * 候选，每个空号一次 LineSearch，命中缓存的不占请求；补到的线路会把沿途站点写回
      * （`addLineTo`），换乘站天然与已加载线路接通，清空重跑就能延伸过去。
      * 上限不能只看已加载的最大编号——首遍只到 14 号线时 15/18 号永远补不到，所以没有
-     * 城市级上限缓存时向外多探几个编号，探到哪儿缓存下来（见 tpMetroMax）。 */
+     * 城市级上限缓存时向外多探几个编号，探到哪儿缓存下来（见 tpMetroMax）。
+     * 单轮名额被截断时记 `more`，下一轮从前沿继续，避免 18 号线因名额先被低编号用光而永远轮不到。 */
     var gapDone = false, gapTried = [], gapLoaded = [], gapSkipped = [];
     function metroMaxCached() {
         var e = tpMetroMax[cityKey];
-        /* v:2 = 新口径。旧缓存没有版本号，无法区分「已加载最大编号」和「已探测范围」；
-         * 18 号线曾被在建过滤误杀，旧缓存会把上限钉在 14/17，之后 30 天都不再补查 18。 */
-        if (e && e.v >= 2 && e.n > 0 && Date.now() - (e.t || 0) < TP_METRO_MAX_TTL) return e.n;
-        return 0;
+        /* v:2 = 新口径：n 是「已经探测到的最大编号」，不是「已加载最大编号」。
+         * 旧缓存没有版本号，18 号线曾被在建过滤误杀后把上限钉在 14/17，之后 30 天不再补查 18。 */
+        if (e && e.v >= 2 && e.n > 0 && Date.now() - (e.t || 0) < TP_METRO_MAX_TTL) return e;
+        return null;
+    }
+    function metroMaxEntry() {
+        var e = tpMetroMax[cityKey];
+        if (!e || e.v < 2 || Date.now() - (e.t || 0) > TP_METRO_MAX_TTL) {
+            e = tpMetroMax[cityKey] = { n: 0, v: 2, none: {}, t: Date.now() };
+        }
+        return e;
     }
     function metroGapQueries() {
         var seen = {}, maxN = 0, pcount = {}, prefix = '';
@@ -3714,31 +3732,48 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         });
         // 命名前缀按已加载线路里出现最多的那个（上海/北京「地铁」、重庆「轨道交通」）
         Object.keys(pcount).forEach(function (p) { if (!prefix || pcount[p] > pcount[prefix]) prefix = p; });
-        if (!prefix || !maxN) return [];
-        var cachedMax = metroMaxCached();
-        var scanMax = cachedMax > 0 ? Math.max(cachedMax, maxN) : (maxN + 6);
-        var out = [];
-        for (var i = 1; i <= scanMax && out.length < TP_MAX_METRO_GAPS; i++) {
+        if (!prefix || !maxN) return { list: [], probed: 0, truncated: false };
+        var cached = metroMaxCached();
+        var scanMax = cached ? Math.max(cached.n, maxN) : (maxN + 6);
+        // 上一轮被缺口上限截断：从缓存前沿继续向外探，否则 18 号线这类高编号永远轮不到
+        if (cached && cached.more) scanMax = Math.max(scanMax, cached.n + 6);
+        var none = (cached && cached.none) || {};
+        var out = [], probed = 0;
+        for (var i = 1; i <= scanMax; i++) {
+            if (out.length >= TP_MAX_METRO_GAPS) break;
+            probed = i;
             if (seen[i]) continue;
             var q = prefix + i + '号线';
+            // 近期确认「查不到这条线」的编号直接跳过；负面缓存 7 天后自动重试
+            if (none[i] && Date.now() - none[i] < TP_METRO_NONE_TTL) { gapSkipped.push(q); continue; }
             // 同一会话内已确认在建/规划（或盲查无首末班）的编号不再重复补查
             if (tpUcBlocked(cityKey, q, true)) { gapSkipped.push(q); continue; }
             out.push(q);
         }
-        return out;
+        var truncated = i <= scanMax && out.length >= TP_MAX_METRO_GAPS;
+        if (!truncated) probed = scanMax;
+        return { list: out, probed: probed, truncated: truncated };
     }
-    /* 把本轮已加载的最大编号记到城市缓存：之后各圈只补到这儿，不再盲试更大的不存在的线。
-     * 旧条目没有版本号，直接覆盖改写，保证下一次一定重探一次（见 metroMaxCached）。 */
-    function noteMetroMax() {
+    function noteMetroNone(q) {
+        var m = /(\d+)号线/.exec(q || '');
+        if (!m) return;
+        metroMaxEntry().none[parseInt(m[1], 10)] = Date.now();
+    }
+    /* 把「已探测到的最大编号」记到城市缓存：之后各圈只补到这儿，不再盲试更大的不存在的线。
+     * probed 是本轮完整枚举到的最大编号（被缺口上限截断时只到最后一个实际查过的号）；
+     * 不能再拿「已加载最大编号」当上限——某条线一次失败就会把自己永久钉在缓存之外。 */
+    function noteMetroMax(probed, truncated) {
         var top = 0;
         Object.keys(routes).forEach(function (q) {
             var m = /^(地铁|轨道交通|轨道)(\d+)号线/.exec(q);
             if (m) top = Math.max(top, parseInt(m[2], 10) || 0);
         });
-        if (!(top > 0)) return;
-        var e = tpMetroMax[cityKey];
-        if (e && e.v >= 2 && e.n >= top) e.t = Date.now();
-        else tpMetroMax[cityKey] = { n: top, v: 2, t: Date.now() };
+        var e = metroMaxEntry();
+        if (top > e.n) e.n = top;
+        if (probed > e.n) e.n = probed;
+        if (!(e.n > 0)) return;
+        e.more = !!truncated;
+        e.t = Date.now();
         saveJson(TP_METRO_MAX_KEY, tpMetroMax);
     }
     function namedLineQueries() {
@@ -3754,18 +3789,20 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         gapDone = true;
         if (want === 'BUS' || !modeAllowed('SUBWAY')) { cb(false); return; }
         // 编号缺口用盲查规则；专名线路（浦江线）本身就不是编号，不能套盲查的名字/时刻校验
-        var list = metroGapQueries().map(function (q) { return { q: q, gap: true }; })
+        var gapInfo = metroGapQueries();
+        var list = gapInfo.list.map(function (q) { return { q: q, gap: true }; })
             .concat(namedLineQueries().map(function (q) { return { q: q, gap: false }; }));
-        if (!list.length) { noteMetroMax(); cb(false); return; }
+        var probed = gapInfo.probed;
+        if (!list.length) { noteMetroMax(probed, gapInfo.truncated); cb(false); return; }
         estMax = Math.max(estMax, calls + list.length);
         var i = 0;
         function next() {
             if (aborted()) { terminate(true); return; }
-            if (i >= list.length) { noteMetroMax(); cb(gapLoaded.length > 0); return; }
+            if (i >= list.length) { noteMetroMax(probed, gapInfo.truncated); cb(gapLoaded.length > 0); return; }
             var item = list[i++];
             var q = item.q;
             gapTried.push(q);
-            loadLineVariants(q, function (variants) {
+            loadLineVariants(q, function (variants, reason) {
                 if (aborted()) { terminate(true); return; }
                 if (variants && variants.length) {
                     var before = Object.keys(routes).length;
@@ -3773,6 +3810,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     queryState[q] = 'done';
                     if (Object.keys(routes).length > before) gapLoaded.push(q);
                 } else {
+                    // 确认查不到这条线：写 7 天负面缓存，避免每圈都为不存在的编号重花请求
+                    if (reason === 'empty') noteMetroNone(q);
                     // 记失败，免得远端换乘补查再为这个空号花一次请求
                     queryState[q] = 'failed';
                 }
@@ -6200,10 +6239,15 @@ function tpUcBaseKey(name) {
     return m ? ('n:' + m[1]) : nm;   // 20号线东延伸 / 地铁20号线 → n:20
 }
 function tpUcPhase(name) {
-    var nm = tpLineNorm(name);
+    var raw = String(name || '').replace(/\s+/g, '');
+    var nm = tpLineNorm(raw);
     var m = /^\D*\d+号线(.*)$/.exec(nm);
-    if (!m) return '';
-    return /一期|二期|三期|四期|五期|延伸|东延|西延|南延|北延|中段|段/.test(m[1]) ? m[1] : '';
+    var tail = m ? m[1] : '';
+    // tpLineNorm 会把括号连同内容一起剪掉，「18号线(二期)」要回原文再看一眼
+    if (!tail) tail = raw.replace(/^.*?\d+号线/, '');
+    if (!tail) return '';
+    var pm = /(一期|二期|三期|四期|五期|东延|西延|南延|北延|延伸|支线|中段|段)/.exec(tail);
+    return pm ? pm[1] : '';
 }
 function tpUcKey(name) {
     var base = tpUcBaseKey(name);
