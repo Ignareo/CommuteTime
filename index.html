@@ -6180,10 +6180,12 @@ function tpFilterLineVariants(cityKey, q, variants, gap, fresh) {
         }
 
         // 弱证据：盲查的新响应完全没有首末班时间（在建线路通常如此）。
+        // 高德 start_time/end_time 的格式是 "0600"（也兼容 "06:00"）。
         // 只对新响应生效；旧缓存没有这些字段，不能据此误杀真实线路。
         var stime = String((it && (it.stime || it.start_time)) || '').trim();
         var etime = String((it && (it.etime || it.end_time)) || '').trim();
-        var hasTime = /^\d{1,2}:\d{2}/.test(stime) || /^\d{1,2}:\d{2}/.test(etime);
+        var hasTime = /^\d{1,2}:\d{2}/.test(stime) || /^\d{3,4}$/.test(stime) ||
+            /^\d{1,2}:\d{2}/.test(etime) || /^\d{3,4}$/.test(etime);
         if (gap && fresh && !hasTime) {
             tpUcMark('weak', cityKey, nm); rejected.push(nm); return;
         }
