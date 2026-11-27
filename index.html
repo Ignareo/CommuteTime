@@ -2362,9 +2362,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         byKind.metro.forEach(function (p) {
             var addr = String((p && p.address) || '');
             if (!/在建|规划|拟建|暂缓|未开通/.test(addr)) return;
-            var re = /(?:在建|规划|拟建|暂缓|未开通)[^;；,，、|/]*?((?:地铁|轨道交通|轨道)?\s*\d+号线|[^;；,，、|/()（）]{1,20}线)/g;
+            // 连同「一期东段/二期」一起捕获，交给 tpUcKey 区分整条线与分期段
+            var re = /(?:在建|规划|拟建|暂缓|未开通)([^;；,，、|/]+)/g;
             var m;
-            while ((m = re.exec(addr))) tpUcMark('strong', cityKey, m[1]);
+            while ((m = re.exec(addr))) tpUcMark('strong', cityKey, m[1], p.name);
         });
         ['bus', 'metro'].forEach(function (kind) {
             groupStationPois(byKind[kind], kind).forEach(function (g) {
@@ -3658,7 +3659,9 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var gapDone = false, gapTried = [], gapLoaded = [], gapSkipped = [];
     function metroMaxCached() {
         var e = tpMetroMax[cityKey];
-        if (e && e.n > 0 && Date.now() - (e.t || 0) < TP_METRO_MAX_TTL) return e.n;
+        /* v:2 = 新口径。旧缓存没有版本号，无法区分「已加载最大编号」和「已探测范围」；
+         * 18 号线曾被在建过滤误杀，旧缓存会把上限钉在 14/17，之后 30 天都不再补查 18。 */
+        if (e && e.v >= 2 && e.n > 0 && Date.now() - (e.t || 0) < TP_METRO_MAX_TTL) return e.n;
         return 0;
     }
     function metroGapQueries() {
@@ -3687,7 +3690,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         }
         return out;
     }
-    /* 把本轮已加载的最大编号记到城市缓存：之后各圈只补到这儿，不再盲试更大的不存在的线 */
+    /* 把本轮已加载的最大编号记到城市缓存：之后各圈只补到这儿，不再盲试更大的不存在的线。
+     * 旧条目没有版本号，直接覆盖改写，保证下一次一定重探一次（见 metroMaxCached）。 */
     function noteMetroMax() {
         var top = 0;
         Object.keys(routes).forEach(function (q) {
@@ -3696,8 +3700,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         });
         if (!(top > 0)) return;
         var e = tpMetroMax[cityKey];
-        if (e && e.n >= top) e.t = Date.now();
-        else tpMetroMax[cityKey] = { n: top, t: Date.now() };
+        if (e && e.v >= 2 && e.n >= top) e.t = Date.now();
+        else tpMetroMax[cityKey] = { n: top, v: 2, t: Date.now() };
         saveJson(TP_METRO_MAX_KEY, tpMetroMax);
     }
     function rescueMetroGaps(cb) {
@@ -6136,20 +6140,55 @@ function looksLikeLineName(s) {
  *   weak   —— 编号缺口盲查的新响应完全没有首末班时间；只拦同一会话里的盲查，
  *             不拦站点地址/导航证据加载，也不写空缓存，避免把「只是缺时刻数据」的
  *             真实线路在 30 天缓存期内永久拉黑。 */
-var tpUcState = { strong: {}, weak: {} };
-function tpUcKey(name) {
+var tpUcState = { strong: {}, weak: {}, phaseStops: {} };
+/* 线路编号只代表「整条线」；分期段（18号线二期）必须单独成键，否则会把运营中的
+ * 18 号线主线一起拉黑。上海 18 号线二期在建、主线正常运营，实测整条 18 号线消失后
+ * 银南大厦连御桥/下沙都到不了。 */
+function tpUcBaseKey(name) {
     var nm = tpLineNorm(name);
     var m = /(\d+)号线/.exec(nm);
     return m ? ('n:' + m[1]) : nm;   // 20号线东延伸 / 地铁20号线 → n:20
+}
+function tpUcPhase(name) {
+    var nm = tpLineNorm(name);
+    var m = /^\D*\d+号线(.*)$/.exec(nm);
+    if (!m) return '';
+    return /一期|二期|三期|四期|五期|延伸|东延|西延|南延|北延|中段|段/.test(m[1]) ? m[1] : '';
+}
+function tpUcKey(name) {
+    var base = tpUcBaseKey(name);
+    var ph = tpUcPhase(name);
+    return ph ? (base + '#' + ph) : base;
 }
 function tpUcBlocked(cityKey, name, includeWeak) {
     if (!cityKey || !name) return false;
     var k = cityKey + '|' + tpUcKey(name);
     return !!(tpUcState.strong[k] || (includeWeak && tpUcState.weak[k]));
 }
-function tpUcMark(kind, cityKey, name) {
+function tpUcMark(kind, cityKey, name, stopName) {
     if (!cityKey || !name || !tpUcState[kind]) return;
     tpUcState[kind][cityKey + '|' + tpUcKey(name)] = 1;
+    /* 分期段只拦自己；同时记下它的车站名。盲查整条线时，只有返回站序真的包含
+     * 这些在建站，才判定「整条线还没开通」（如 20号线一期东段），否则放行运营主线。 */
+    if (stopName && tpUcPhase(name)) {
+        var bk = cityKey + '|' + tpUcBaseKey(name);
+        (tpUcState.phaseStops[bk] || (tpUcState.phaseStops[bk] = {}))[tpUcStopName(stopName)] = 1;
+    }
+}
+function tpUcStopName(name) {
+    return stationDisplayName('metro', name)
+        .replace(/[（(].*$/, '').replace(/站$/, '');
+}
+/* 返回站序里出现任一分期在建站 → 这条很可能是「整条在建」的盲查结果。
+ * 18 号线主线 26 站、二期通南路等不在其中，因此不会被误判。 */
+function tpUcPhaseBlocked(cityKey, name, it) {
+    var marks = tpUcState.phaseStops[cityKey + '|' + tpUcBaseKey(name)];
+    if (!marks) return false;
+    var stops = (it && it.s) || [];
+    for (var i = 0; i < stops.length; i++) {
+        if (marks[tpUcStopName(stops[i] && stops[i][0])]) return true;
+    }
+    return false;
 }
 /* gap=true 表示「编号缺口盲查」：额外要求线路名匹配请求编号，且仅对新响应要求
  * 有首末班时间；站点地址/导航证据加载不套这些规则。 */
@@ -6172,6 +6211,12 @@ function tpFilterLineVariants(cityKey, q, variants, gap, fresh) {
         }
         // 强证据 3：站点 POI 地址已标记该线在建（见 absorbPois）
         if (tpUcBlocked(cityKey, nm, gap)) { rejected.push(nm); return; }
+        /* 分期段在建不能拉黑整条运营线：只有返回站序真的包含该期在建站，
+         * 才说明查到的就是未开通的那一段（20号线一期东段）；18号线主线不含二期站，放行。 */
+        if (tpUcPhaseBlocked(cityKey, nm, it)) {
+            tpUcMark('strong', cityKey, nm);
+            rejected.push(nm); return;
+        }
 
         // 盲查必须真的是请求的那条轨道线，避免「20路」之类模糊命中
         if (gap && qm) {
