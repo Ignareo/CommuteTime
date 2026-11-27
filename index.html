@@ -1009,8 +1009,11 @@ var TP_AREA_COVER_PAD = 200;                     // 覆盖半径在实际最远�
 var TP_SPEED = { SUBWAY: 35, BUS: 12 };
 /* 非编号轨道线无法按编号枚举，站点地址也不一定覆盖（浦江线只在 8 号线终点沈杜公路
  * 换乘，区域检索未必撒到那里）。按城市列出已知专名线路，每圈补查一次；命中 30 天
- * 线路缓存后不耗额度。未收录城市/线路不受影响。 */
-var TP_NAMED_LINES = { '上海': ['浦江线'] };
+ * 线路缓存后不耗额度。未收录城市/线路不受影响。
+ * 市域机场线（上海轨道交通市域线机场联络线）的 LineSearch 名称是「市域机场线」；
+ * 未开通的嘉闵线等不要提前收录——查不到会每圈白花一次请求，开通后车站地址/导航里
+ * 的「市域」前缀会被通用识别。 */
+var TP_NAMED_LINES = { '上海': ['浦江线', '市域机场线'] };
 /* 逐线速度学习：Transfer 单线 segment 的 `sg.time` **含等这一班车的候车**——
  * 实测同一段陆家浜路→杨高中路（9号线 7.42km）在 08:00/08:06/18:00 分别是
  * 1020/900/870 秒；差的那 150 秒就是候车。候车是**加性固定开销**（t = d/v + W），
@@ -1023,11 +1026,13 @@ var TP_NAMED_LINES = { '上海': ['浦江线'] };
  *   - 建图使用逐线候车，而不是所有线路都固定 150 秒。
  * 口径带版本号，改口径时旧样本整体作废，否则新旧混算永远调不回来。 */
 var TP_SPEED_VER = 4;                                     // 1=含候车, 2=固定扣候车, 3=回归, 4=稳健斜率+时段候车+制式
-/* 速度制式与学习参数。普通地铁、磁浮、轻轨的旅行速度相差一个数量级，不能共用
- * SUBWAY=[25,120] 一套范围：磁浮约 200km/h 会被上限拒绝后退回 35，轻轨 20~25km/h
- * 会被下限拒绝后反而退回更快的 35，两种都直接扭曲等时圈。 */
+/* 速度制式与学习参数。普通地铁、市域铁路、磁浮、轻轨的旅行速度相差一个数量级，
+ * 不能共用 SUBWAY=[25,120] 一套范围：磁浮约 200km/h 会被上限拒绝后退回 35；
+ * 市域机场线初期 59km/40min（约 89km/h）会被 35 的 prior 严重低估；轻轨 20~25km/h
+ * 会被下限拒绝后反而退回更快的 35，三种都直接扭曲等时圈。 */
 var TP_SPEED_SPEC = {
     SUBWAY:    { range: [25, 120], raw: [12.5, 180], prior: 35,  wait: 150, waitMin: 60,  waitMax: 420, learnMin: 3000 },
+    REGIONAL:  { range: [35, 180], raw: [20, 220],   prior: 90,  wait: 420, waitMin: 120, waitMax: 900, learnMin: 3000 },
     MAGLEV:    { range: [80, 300], raw: [40, 450],   prior: 180, wait: 420, waitMin: 120, waitMax: 900, learnMin: 3000 },
     LIGHTRAIL: { range: [15, 40],  raw: [7.5, 60],   prior: 25,  wait: 180, waitMin: 60,  waitMax: 480, learnMin: 2000 },
     BUS:       { range: [4, 30],   raw: [2, 45],     prior: 12,  wait: 240, waitMin: 90,  waitMax: 480, learnMin: 3000 }
@@ -1257,20 +1262,32 @@ var tpSpeedDirty = tpSpeedDropped > 0;
  * 「磁浮线」保留「磁浮」，否则会被归一成只剩一个「线」字；「磁悬浮线」统一成
  * 「磁浮线」，保证 Transfer 与 LineSearch 的写法能落到同一键。 */
 function tpLineNorm(name) {
-    return String(name || '').replace(/\s+/g, '')
+    var nm = String(name || '').replace(/\s+/g, '')
         .replace(/^(地铁|轨道交通)/, '')
         .replace(/^磁悬浮(?=线)/, '磁浮')
         .replace(/[（(].*$/, '');
+    /* 市域机场线 = 机场联络线，高德 LineSearch 与 Transfer 可能各用一种写法；
+     * 不统一会让导航学到的速度落不到建图用的键上。 */
+    return /市域机场线|机场联络线/.test(nm) ? '市域机场线' : nm;
+}
+/* 市域铁路（上海机场联络线/市域机场线、未来的市域嘉闵线等）名字里没有「地铁/轨道」，
+ * 高德还可能把它标成 RAILWAY/BUS。只认「市域」前缀与「机场联络线」这类无歧义写法，
+ * 不匹配泛化的「铁路」——京沪高铁等国家铁路混进地铁圈会凭空造出快速通道。
+ * 「市域公交」「市域1路」是公交线路名，不能算轨道；上海现在还有一条叫「嘉闵线」
+ * 的公交线路，裸名同样不能匹配，未来市域铁路开通后高德会写成「市域嘉闵线」。 */
+function tpRegionalName(name, type) {
+    return /市域(?!公交|巴士|\d)|机场联络线/.test(String(name || '') + String(type || ''));
 }
 /* 轨道关键词是“是否按轨道建图”的判据；注意高德官方 transit_mode 还有 METRO_RAIL，
- * 不能只认 SUBWAY。RAILWAY 是火车，不是城市轨道，这里不把它当轨道。
+ * 不能只认 SUBWAY。RAILWAY 通常是火车，单看 transit_mode 不能当轨道（市域铁路的
+ * RAILWAY 由 navSegModeKey 按线路名另行识别）。
  * 浦江线是胶轮 APM，名字里没有「地铁/轨道」，高德还可能把它标成 BUS；不在这里
  * 显式识别，整条线会被当成公交，在地铁圈里直接丢掉。 */
 function tpRailName(name, type) {
     return /地铁|轨道|轻轨|单轨|有轨电车|导轨式|磁浮|磁悬浮|浦江线|胶轮|APM/i
-        .test(String(name || '') + String(type || ''));
+        .test(String(name || '') + String(type || '')) || tpRegionalName(name, type);
 }
-/* 速度制式比建图方式更细：磁浮与轻轨都按轨道建图，但旅速范围完全不同。
+/* 速度制式比建图方式更细：磁浮、市域铁路与轻轨都按轨道建图，但旅速范围完全不同。
  * 线路名与 type 一起看：高德实际会返回「磁浮线 / 磁悬浮列车线路」，
  * 也有城市把磁浮命名为「机场线」，只看名字会漏掉。 */
 function tpSpeedClass(mode, name, type) {
@@ -1278,6 +1295,8 @@ function tpSpeedClass(mode, name, type) {
     if (/磁浮|磁悬浮/.test(label)) return 'MAGLEV';
     // 浦江线/APM 胶轮捷运旅速约 30km/h，与轻轨同档，不能套普通地铁 35~120 的范围
     if (/浦江线|胶轮|APM|有轨电车|轻轨|单轨|导轨式/i.test(label)) return 'LIGHTRAIL';
+    // 市域机场线初期约 89km/h，普通地铁先验 35 会把圈画小
+    if (tpRegionalName(name, type)) return 'REGIONAL';
     return mode === 'BUS' ? 'BUS' : 'SUBWAY';
 }
 function tpSpeedKeyInfo(cityKey, mode, name, type) {
@@ -2754,14 +2773,15 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         return String(bl.name || bl.line_name || (bl.busline && bl.busline.name) || '');
     }
     /* 乘车段交通方式唯一判据：高德官方枚举优先（BUS/SUBWAY/METRO_RAIL/WALK/RAILWAY/TAXI），
-     * 线路名/类型 regex 只兜底。METRO_RAIL 同样是城市轨道；RAILWAY 是火车，不能混入
-     * 地铁圈速度；WALK/TAXI 也不参与逐线学习。 */
+     * 线路名/类型 regex 只兜底。METRO_RAIL 同样是城市轨道；RAILWAY 通常是火车，不能混入
+     * 地铁圈速度；WALK/TAXI 也不参与逐线学习。
+     * 例外：市域铁路（市域机场线/未来的市域嘉闵线）与浦江线这类 APM 常被高德标成
+     * RAILWAY/BUS；整段线路名都是轨道判据时按 SUBWAY 处理，否则地铁圈会把整段方案丢掉。
+     * 京沪高铁等国家铁路名称不含这些判据，仍保留 RAILWAY。 */
     function navSegModeKey(sg) {
         var tm = String((sg && sg.transit_mode) || '').toUpperCase();
         var lines = navSegLines(sg || {});
-        /* 浦江线这类 APM 高德可能标成 BUS；整段线路名都是轨道判据时按 SUBWAY 处理，
-         * 否则地铁圈会把整段方案当公交丢掉。 */
-        if (tm === 'BUS' && lines.length) {
+        if ((tm === 'BUS' || tm === 'RAILWAY') && lines.length) {
             var rail = true;
             for (var i = 0; i < lines.length; i++) {
                 if (!tpRailName(navLineName(lines[i]), lines[i].type)) { rail = false; break; }
@@ -4754,8 +4774,9 @@ function tpAlgoSig() {
     if (_tpAlgoSig !== null) return _tpAlgoSig;
     var src = String(buildTransitPreciseRing) + '|' + String(tpMakeHeap) + '|' +
         String(tpSpeedFit) + '|' + String(tpSpeedWaitFor) + '|' + String(tpLineSpeedInfo) + '|' +
-        String(tpSpeedInfoFromEntry) + '|' +
-        String(tpRailName) + '|' + String(tpSpeedClass) + '|' + JSON.stringify(TP_NAMED_LINES) + '|' +
+        String(tpSpeedInfoFromEntry) + '|' + String(tpLineNorm) + '|' +
+        String(tpRailName) + '|' + String(tpRegionalName) + '|' + String(tpSpeedClass) + '|' +
+        JSON.stringify(TP_NAMED_LINES) + '|' +
         String(tpFilterLineVariants) + '|' + String(tpUcKey) + '|' + String(tpUcPhaseBlocked) + '|' +
         JSON.stringify(TP_SPEED_SPEC) + '|' + TP_SPEED_VER + '|' +
         TP_NAV_CAP_MAX + '|' + TP_NAV_REFINE_CAP + '|' + TP_NAV_CAL_MAX + '|' +
