@@ -1007,6 +1007,10 @@ var TP_AREA_COVER_MIN = 500;                     // 覆盖半径下限：返回 
 var TP_AREA_COVER_PAD = 200;                     // 覆盖半径在实际最远站之外留的缓冲（米）
 // 兜底先验（含停站）：只有该线路没学到任何导航样本时才用，值取上海地铁/公交的中位水平
 var TP_SPEED = { SUBWAY: 35, BUS: 12 };
+/* 非编号轨道线无法按编号枚举，站点地址也不一定覆盖（浦江线只在 8 号线终点沈杜公路
+ * 换乘，区域检索未必撒到那里）。按城市列出已知专名线路，每圈补查一次；命中 30 天
+ * 线路缓存后不耗额度。未收录城市/线路不受影响。 */
+var TP_NAMED_LINES = { '上海': ['浦江线'] };
 /* 逐线速度学习：Transfer 单线 segment 的 `sg.time` **含等这一班车的候车**——
  * 实测同一段陆家浜路→杨高中路（9号线 7.42km）在 08:00/08:06/18:00 分别是
  * 1020/900/870 秒；差的那 150 秒就是候车。候车是**加性固定开销**（t = d/v + W），
@@ -1258,9 +1262,12 @@ function tpLineNorm(name) {
         .replace(/[（(].*$/, '');
 }
 /* 轨道关键词是“是否按轨道建图”的判据；注意高德官方 transit_mode 还有 METRO_RAIL，
- * 不能只认 SUBWAY。RAILWAY 是火车，不是城市轨道，这里不把它当轨道。 */
+ * 不能只认 SUBWAY。RAILWAY 是火车，不是城市轨道，这里不把它当轨道。
+ * 浦江线是胶轮 APM，名字里没有「地铁/轨道」，高德还可能把它标成 BUS；不在这里
+ * 显式识别，整条线会被当成公交，在地铁圈里直接丢掉。 */
 function tpRailName(name, type) {
-    return /地铁|轨道|轻轨|单轨|有轨电车|导轨式|磁浮|磁悬浮/.test(String(name || '') + String(type || ''));
+    return /地铁|轨道|轻轨|单轨|有轨电车|导轨式|磁浮|磁悬浮|浦江线|胶轮|捷运|APM/i
+        .test(String(name || '') + String(type || ''));
 }
 /* 速度制式比建图方式更细：磁浮与轻轨都按轨道建图，但旅速范围完全不同。
  * 线路名与 type 一起看：高德实际会返回「磁浮线 / 磁悬浮列车线路」，
@@ -1268,7 +1275,8 @@ function tpRailName(name, type) {
 function tpSpeedClass(mode, name, type) {
     var label = String(name || '') + String(type || '');
     if (/磁浮|磁悬浮/.test(label)) return 'MAGLEV';
-    if (/有轨电车|轻轨|单轨|导轨式/.test(label)) return 'LIGHTRAIL';
+    // 浦江线/APM 胶轮捷运旅速约 30km/h，与轻轨同档，不能套普通地铁 35~120 的范围
+    if (/浦江线|胶轮|捷运|APM|有轨电车|轻轨|单轨|导轨式/i.test(label)) return 'LIGHTRAIL';
     return mode === 'BUS' ? 'BUS' : 'SUBWAY';
 }
 function tpSpeedKeyInfo(cityKey, mode, name, type) {
@@ -2390,8 +2398,12 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     function lineQuery(kind, name) {
         var nm = String(name || '').replace(/\s+/g, '');
         if (!nm) return '';
-        // 地铁站 address 多写作「1号线」，查线路要加「地铁」前缀；已带前缀的照原样查
-        if (kind === 'metro') return /^(地铁|轨道交通|磁浮|磁悬浮)/.test(nm) ? nm : '地铁' + nm;
+        /* 编号线（1号线）要加「地铁」前缀；浦江线/磁浮线这类专名线路加前缀反而
+         * 查不到，原样查询。已带「地铁/轨道交通」前缀的保持不变。 */
+        if (kind === 'metro') {
+            if (/^(地铁|轨道交通|轨道)/.test(nm)) return nm;
+            return /\d+号线/.test(nm) ? '地铁' + nm : nm;
+        }
         return nm.replace(/[（(].*$/, '');
     }
 
@@ -2716,10 +2728,19 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
      * 地铁圈速度；WALK/TAXI 也不参与逐线学习。 */
     function navSegModeKey(sg) {
         var tm = String((sg && sg.transit_mode) || '').toUpperCase();
+        var lines = navSegLines(sg || {});
+        /* 浦江线这类 APM 高德可能标成 BUS；整段线路名都是轨道判据时按 SUBWAY 处理，
+         * 否则地铁圈会把整段方案当公交丢掉。 */
+        if (tm === 'BUS' && lines.length) {
+            var rail = true;
+            for (var i = 0; i < lines.length; i++) {
+                if (!tpRailName(navLineName(lines[i]), lines[i].type)) { rail = false; break; }
+            }
+            if (rail) return 'SUBWAY';
+        }
         if (tm === 'SUBWAY' || tm === 'METRO_RAIL' || tm === 'RAIL') return 'SUBWAY';
         if (tm === 'BUS') return 'BUS';
         if (tm === 'WALK' || tm === 'RAILWAY' || tm === 'TAXI') return tm;
-        var lines = navSegLines(sg || {});
         if (!lines.length) return '';
         var bl = lines[0];
         return tpRailName(navLineName(bl), bl.type) ? 'SUBWAY' : 'BUS';
@@ -3704,18 +3725,29 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         else tpMetroMax[cityKey] = { n: top, v: 2, t: Date.now() };
         saveJson(TP_METRO_MAX_KEY, tpMetroMax);
     }
+    function namedLineQueries() {
+        var out = [];
+        (TP_NAMED_LINES[cityKey] || []).forEach(function (q) {
+            if (!q || routes[q] || queryState[q] || tpUcBlocked(cityKey, q, true)) return;
+            out.push(q);
+        });
+        return out;
+    }
     function rescueMetroGaps(cb) {
         if (gapDone) { cb(false); return; }
         gapDone = true;
         if (want === 'BUS' || !modeAllowed('SUBWAY')) { cb(false); return; }
-        var list = metroGapQueries();
+        // 编号缺口用盲查规则；专名线路（浦江线）本身就不是编号，不能套盲查的名字/时刻校验
+        var list = metroGapQueries().map(function (q) { return { q: q, gap: true }; })
+            .concat(namedLineQueries().map(function (q) { return { q: q, gap: false }; }));
         if (!list.length) { noteMetroMax(); cb(false); return; }
         estMax = Math.max(estMax, calls + list.length);
         var i = 0;
         function next() {
             if (aborted()) { terminate(true); return; }
             if (i >= list.length) { noteMetroMax(); cb(gapLoaded.length > 0); return; }
-            var q = list[i++];
+            var item = list[i++];
+            var q = item.q;
             gapTried.push(q);
             loadLineVariants(q, function (variants) {
                 if (aborted()) { terminate(true); return; }
@@ -3729,7 +3761,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     queryState[q] = 'failed';
                 }
                 next();
-            }, { gap: true });
+            }, { gap: item.gap });
         }
         next();
     }
@@ -4657,6 +4689,7 @@ function tpAlgoSig() {
     if (_tpAlgoSig !== null) return _tpAlgoSig;
     var src = String(buildTransitPreciseRing) + '|' + String(tpMakeHeap) + '|' +
         String(tpSpeedFit) + '|' + String(tpSpeedWaitFor) + '|' + String(tpLineSpeedInfo) + '|' +
+        String(tpRailName) + '|' + String(tpSpeedClass) + '|' + JSON.stringify(TP_NAMED_LINES) + '|' +
         JSON.stringify(TP_SPEED_SPEC) + '|' + TP_SPEED_VER + '|' +
         TP_NAV_CAP_MAX + '|' + TP_NAV_REFINE_CAP + '|' + TP_NAV_CAL_MAX + '|' +
         TP_NAV_REFINE_PER_LINE + '|' + TP_LINE_BIAS_MIN + '|' + TP_LINE_BIAS_MAX + '|' +
