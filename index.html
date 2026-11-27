@@ -3739,7 +3739,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         Object.keys(pcount).forEach(function (p) { if (!prefix || pcount[p] > pcount[prefix]) prefix = p; });
         if (!prefix || !maxN) return { list: [], probed: 0, truncated: false };
         var cached = metroMaxCached();
-        var scanMax = cached ? Math.max(cached.n, maxN) : (maxN + 6);
+        var raw = tpMetroMax[cityKey];
+        // 旧缓存没有版本号：保留它记的「已加载最大编号」当起点再向外探，避免高编号线丢线索
+        var legacyN = raw && !(raw.v >= 2) && raw.n > 0 ? raw.n : 0;
+        var scanMax = cached ? Math.max(cached.n, maxN) : (Math.max(maxN, legacyN) + 6);
         // 上一轮被缺口上限截断：从缓存前沿继续向外探，否则 18 号线这类高编号永远轮不到
         if (cached && cached.more) scanMax = Math.max(scanMax, cached.n + 6);
         var none = (cached && cached.none) || {};
@@ -4751,6 +4754,7 @@ function tpAlgoSig() {
         String(tpSpeedFit) + '|' + String(tpSpeedWaitFor) + '|' + String(tpLineSpeedInfo) + '|' +
         String(tpSpeedInfoFromEntry) + '|' +
         String(tpRailName) + '|' + String(tpSpeedClass) + '|' + JSON.stringify(TP_NAMED_LINES) + '|' +
+        String(tpFilterLineVariants) + '|' + String(tpUcKey) + '|' + String(tpUcPhaseBlocked) + '|' +
         JSON.stringify(TP_SPEED_SPEC) + '|' + TP_SPEED_VER + '|' +
         TP_NAV_CAP_MAX + '|' + TP_NAV_REFINE_CAP + '|' + TP_NAV_CAL_MAX + '|' +
         TP_NAV_REFINE_PER_LINE + '|' + TP_LINE_BIAS_MIN + '|' + TP_LINE_BIAS_MAX + '|' +
