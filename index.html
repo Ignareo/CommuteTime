@@ -2039,8 +2039,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     // 缓存键里的时段片段（桶@时刻）：同一时段、不同分钟各自一份样本
     var departTag = tpDepartTag(departBucket, departPin);
     // 步行范围内的地铁站与公交站分开检索：地铁站是骨架；公交站最多取四页——
-    // 单页只有 25 条，起点错开百来米就会拿到不同线路集；实际翻不翻页由「满页 + 本页
-    // 带出新线路」动态决定（实测市区 1.4km 内 70 个公交站要 3 页，第 4 页才空）。
+    // 单页最多 50 条，起点错开百来米就会拿到不同线路集；实际翻不翻页由「满页 + 本页
+    // 带出新线路」动态决定（实测市区 1.4km 内 70 个公交站一页即可覆盖）。
     var nearRadius = Math.max(300, Math.min(1400, Math.round(targetSec * walkMs / TP_DETOUR * 0.92)));
     var nearQueries = want === 'SUBWAY' ? [{ type: '150500', pages: 1 }]
         : (want === 'BUS' ? [{ type: '150700', pages: 4 }]
@@ -3806,7 +3806,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         });
     }
 
-    /* 本页带来多少条「没见过」的线路名 / 站名。公交线路在市区高度重叠，一页 25 条里
+    /* 本页带来多少条「没见过」的线路名 / 站名。公交线路在市区高度重叠，一页 50 条里
      * 可能全是同几条线的不同站点；这种页翻下去只是重复站点，不值得再花一次搜索配额。
      * 但必须「线路和站名都没有新增」才敢停——只按线路判断会漏掉「某条已知线路在远端
      * 还有新站点」的情况（新站点可能带出别的换乘线）。 */
@@ -3839,7 +3839,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var q = nearQueries[qi];
         calls++;
         nearPages++;
-        var ps = new AMap.PlaceSearch({ type: q.type, pageSize: 25, pageIndex: page, extensions: 'all' });
+        var ps = new AMap.PlaceSearch({ type: q.type, pageSize: TP_AREA_PAGE, pageIndex: page, extensions: 'all' });
         amapRequest('附近站点', {
             run: function (cb) { ps.searchNearBy('', origin, nearRadius, cb); },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.poiList && r.poiList.pois); },
@@ -3853,7 +3853,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 /* 翻页判据：满页（还有更多）且未到上限；公交再要求本页确实带出新线路或
                  * 新站名（两者都没有说明这页纯属重复）。地铁站固定单页（地铁站少，
                  * 多页只会翻出入口）。 */
-                var more = list.length >= 25 && page < q.pages &&
+                var more = list.length >= TP_AREA_PAGE && page < q.pages &&
                     (q.type === '150500' ? false : (fresh > 0 || freshSt > 0));
                 if (more) { fetchNear(qi, page + 1); return; }
                 fetchNear(qi + 1, 1);
@@ -3878,7 +3878,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
 
     function startExpansion() {
         areaUsed++;
-        // 只认作「已覆盖」内圈：外圈受单页 25 条 POI 限制，可能漏站
+        // 只认作「已覆盖」内圈：外圈受单页 50 条 POI 限制，可能漏站
         areaCenters.push({ lng: origin[0], lat: origin[1], r: Math.round(nearRadius * 0.7) });
         resolveCityFromPois(nearPois);
         absorbPois(nearPois);
@@ -6140,7 +6140,7 @@ function pickLineColor(line, idx) {
 function searchNearbyPois(type, center, radius, maxPages, cb) {
     var acc = [];
     function page(p) {
-        var ps = new AMap.PlaceSearch({ type: type, pageSize: 25, pageIndex: p, extensions: 'all' });
+        var ps = new AMap.PlaceSearch({ type: type, pageSize: TP_AREA_PAGE, pageIndex: p, extensions: 'all' });
         amapRequest('附近车站检索', {
             run: function (cb2) { ps.searchNearBy('', center, radius, cb2); },
             isSuccess: function (s, r) { return s === 'complete' && !!(r && r.poiList && r.poiList.pois); },
@@ -6148,7 +6148,7 @@ function searchNearbyPois(type, center, radius, maxPages, cb) {
                 if (status !== 'success') { cb(acc); return; }
                 var pois = (result.poiList && result.poiList.pois) || [];
                 acc = acc.concat(pois);
-                if (pois.length >= 25 && p < maxPages) {
+                if (pois.length >= TP_AREA_PAGE && p < maxPages) {
                     setTimeout(function () { page(p + 1); }, 200);
                     return;
                 }
