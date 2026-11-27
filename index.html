@@ -2069,7 +2069,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     var departTag = tpDepartTag(departBucket, departPin);
     // 步行范围内的地铁站与公交站分开检索：地铁站是骨架；公交站最多取四页——
     // 单页最多 50 条，起点错开百来米就会拿到不同线路集；实际翻不翻页由「满页 + 本页
-    // 带出新线路」动态决定（实测市区 1.4km 内 70 个公交站一页即可覆盖）。
+    // 带出新线路」动态决定（实测市区 1.4km 内 70 个公交站两页即可覆盖）。
     var nearRadius = Math.max(300, Math.min(1400, Math.round(targetSec * walkMs / TP_DETOUR * 0.92)));
     var nearQueries = want === 'SUBWAY' ? [{ type: '150500', pages: 1 }]
         : (want === 'BUS' ? [{ type: '150700', pages: 4 }]
