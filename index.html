@@ -1341,16 +1341,12 @@ function tpSpeedWaitFor(samples, fit, bucket, spec) {
     }
     return spec.wait;
 }
-/* 返回 {speed, wait, cls, n, bucketN, source}。没有可靠回归时按固定候车求各样本的
- * 隐含速度，再取中位数——仍比 sum(d)/sum(t-W) 抗单个长区间离群值。 */
-function tpLineSpeedInfo(cityKey, mode, name, bucket, type) {
-    var ki = tpSpeedKeyInfo(cityKey, mode, name, type);
-    if (!ki) return null;
-    var e = tpSpeedCache[ki.key];
+/* 从一条速度表记录算出可用信息。速度表与城市级先验共用，避免两套拟合逻辑漂移。 */
+function tpSpeedInfoFromEntry(e, cls, bucket) {
     if (!e || e.v !== TP_SPEED_VER || !Array.isArray(e.s) || !e.s.length) return null;
     if (Date.now() - (e.ts || 0) > TP_SPEED_CACHE_TTL) return null;
     var samples = e.s;
-    var spec = TP_SPEED_SPEC[ki.cls] || TP_SPEED_SPEC.SUBWAY;
+    var spec = TP_SPEED_SPEC[cls] || TP_SPEED_SPEC.SUBWAY;
     var fit = tpSpeedFit(samples);
     var speed, wait, source = fit ? 'fit' : 'median';
     if (fit) {
@@ -1369,9 +1365,35 @@ function tpLineSpeedInfo(cityKey, mode, name, bucket, type) {
     for (var j = 0; j < samples.length; j++) if (samples[j][2] === bucket) bucketN++;
     if (!isFinite(speed) || speed < spec.range[0] || speed > spec.range[1]) return null;
     return {
-        speed: speed, wait: wait, cls: ki.cls, n: samples.length, bucketN: bucketN,
+        speed: speed, wait: wait, cls: cls, n: samples.length, bucketN: bucketN,
         source: source, waitLearned: !!fit
     };
+}
+function tpLineSpeedInfo(cityKey, mode, name, bucket, type) {
+    var ki = tpSpeedKeyInfo(cityKey, mode, name, type);
+    if (!ki) return null;
+    return tpSpeedInfoFromEntry(tpSpeedCache[ki.key], ki.cls, bucket);
+}
+
+/* 城市级速度先验：冷启动时该城市一条线都还没学到，全体套制式先验（地铁 35、公交 12）
+ * 会让快线偏慢、慢线偏快。速度表里同城同制式其它线路的样本是零请求的先验：
+ * 逐线估速度后取中位数（至少 3 条线才可信），没有样本才退回 spec.prior。
+ * 只读 tpSpeedCache，不产生任何高德请求。 */
+var tpCityPriorCache = {};
+function tpCitySpeedPrior(cityKey, cls) {
+    if (!cityKey) return 0;
+    var ck = cityKey + '|' + cls;
+    if (tpCityPriorCache.hasOwnProperty(ck)) return tpCityPriorCache[ck];
+    var pre = ck + '|';
+    var bucket = tpDepartBucket();
+    var speeds = [];
+    Object.keys(tpSpeedCache).forEach(function (k) {
+        if (k.indexOf(pre) !== 0) return;
+        var info = tpSpeedInfoFromEntry(tpSpeedCache[k], cls, bucket);
+        if (info) speeds.push(info.speed);
+    });
+    tpCityPriorCache[ck] = speeds.length >= 3 ? tpMedian(speeds) : 0;
+    return tpCityPriorCache[ck];
 }
 
 function tpLearnLineSpeed(cityKey, mode, name, distM, sec, bucket, type) {
@@ -1400,6 +1422,8 @@ function tpLearnLineSpeed(cityKey, mode, name, distM, sec, bucket, type) {
     e.s.push([distM, sec, b]);
     e.ts = now;
     tpSpeedDirty = true;
+    // 新样本可能改变同城同制式的中位先验；让下一次 buildRoutes/诊断重新计算
+    tpCityPriorCache = {};
     return true;
 }
 
@@ -2082,6 +2106,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 return o;
             })(),
             metroGaps: { tried: gapTried, loaded: gapLoaded },
+            // 城市级速度先验：0 表示样本不足、退回制式先验
+            cityPrior: {
+                SUBWAY: Math.round(tpCitySpeedPrior(cityKey, 'SUBWAY') * 10) / 10,
+                BUS: Math.round(tpCitySpeedPrior(cityKey, 'BUS') * 10) / 10
+            },
             nav: {
                 calls: navCalls, hits: navHits, anchors: navAnchors, learnedLines: learnedLines,
                 speedRefresh: learnedRefresh,
@@ -2409,7 +2438,9 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             var cls = info ? info.cls : tpSpeedClass(m, v.n, v.t);
             var spec = TP_SPEED_SPEC[cls] || TP_SPEED_SPEC[m] || TP_SPEED_SPEC.SUBWAY;
             var learned = !!info;
-            var spd = info ? info.speed : spec.prior;
+            // 没学到逐线速度时，先用同城同制式的逐线中位速度（零请求），
+            // 仍没有足够样本才退回制式先验
+            var spd = info ? info.speed : (tpCitySpeedPrior(cityKey, cls) || spec.prior);
             var wait = info ? info.wait : spec.wait;
             var vms = spd * 1000 / 3600;
             var keys = [], pos = [], cum = [], t = 0, prev = null, prevIdx = -1;
