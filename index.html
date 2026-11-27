@@ -2075,6 +2075,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         : (want === 'BUS' ? [{ type: '150700', pages: 4 }]
             : [{ type: '150500', pages: 1 }, { type: '150700', pages: 4 }]);
     var nearPois = [], nearOk = 0, nearLineSeen = {}, nearStationSeen = {}, nearPages = 0;
+    var ucRejected = [];   // 本轮被在建/规划/线路名不匹配过滤掉的线路（诊断用）
     var estMax = 0;
 
     function aborted() { return !!(ctrl && ctrl.aborted); }
@@ -2110,7 +2111,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 });
                 return o;
             })(),
-            metroGaps: { tried: gapTried, loaded: gapLoaded },
+            metroGaps: { tried: gapTried, loaded: gapLoaded, skipped: gapSkipped, ucRejected: ucRejected },
             // 城市级速度先验：0 表示样本不足、退回制式先验
             cityPrior: {
                 SUBWAY: Math.round(tpCitySpeedPrior(cityKey, 'SUBWAY') * 10) / 10,
@@ -2356,6 +2357,15 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (!kindAllowed(kind)) return;
             byKind[kind].push(p);
         });
+        // 地铁站 POI 的 address 会写「(在建)20号线一期东段」：先把这类线标记下来，
+        // LineSearch 即使把在建线路当普通线路返回，也会被 tpFilterLineVariants 拦掉。
+        byKind.metro.forEach(function (p) {
+            var addr = String((p && p.address) || '');
+            if (!/在建|规划|拟建|暂缓|未开通/.test(addr)) return;
+            var re = /(?:在建|规划|拟建|暂缓|未开通)[^;；,，、|/]*?((?:地铁|轨道交通|轨道)?\s*\d+号线|[^;；,，、|/()（）]{1,20}线)/g;
+            var m;
+            while ((m = re.exec(addr))) tpUcMark('strong', cityKey, m[1]);
+        });
         ['bus', 'metro'].forEach(function (kind) {
             groupStationPois(byKind[kind], kind).forEach(function (g) {
                 var node = registerNode(kind, g.name, g.location.lng, g.location.lat);
@@ -2384,11 +2394,30 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         return nm.replace(/[（(].*$/, '');
     }
 
-    /* 线路名 → LineSearch（站序 + 折线），按「城市|线路名」缓存 */
-    function loadLineVariants(q, cb) {
+    /* 线路名 → LineSearch（站序 + 折线），按「城市|线路名」缓存。
+     * 缓存命中与新响应都走 tpFilterLineVariants：旧版本可能已经把在建 20 号线写进缓存，
+     * 只拦新请求等于继续沿用错误线网。opts.gap 仅由编号缺口补查传入。 */
+    function loadLineVariants(q, cb, opts) {
+        var gap = !!(opts && opts.gap);
         var ck = cityKey + '|' + q;
+        function noteRejected(f) {
+            (f.rejected || []).forEach(function (nm) {
+                if (ucRejected.length < 20 && ucRejected.indexOf(nm) < 0) ucRejected.push(nm);
+            });
+        }
         var hit = tpLineCache.get(ck);
-        if (hit) { cb(hit); return; }
+        if (hit) {
+            /* 旧缓存没有 v/stime 字段，盲查时无法判断是否在运营：删掉重查一次
+             * （每条线一次）。新缓存带 v:2，按存储的首末班字段过滤即可。 */
+            if (gap && hit.length && !(hit[0] && hit[0].v >= 2)) {
+                hit = null;
+            } else {
+                var f0 = tpFilterLineVariants(cityKey, q, hit, gap, false);
+                noteRejected(f0);
+                cb(f0.list.length ? f0.list : null);
+                return;
+            }
+        }
         if (!AMap.LineSearch || !searchCity) { cb(null); return; }
         amapRequest('线路查询', {
             run: function (c2) {
@@ -2402,16 +2431,26 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                 (result.lineInfo || []).forEach(function (it) {
                     var stops = normalizeLineStops(it.via_stops);
                     if (stops.length < 2) return;
-                    out.push({
+                    var v = {
                         n: String(it.name || q),
                         t: String(it.type || ''),
                         s: stops.map(function (x) { return [x.name, x.location[0], x.location[1]]; }),
-                        p: normalizeLinePath(it.path) || []
-                    });
+                        p: normalizeLinePath(it.path) || [],
+                        v: 2
+                    };
+                    // 只存有值的字段，控制 160 条线路缓存的体积
+                    if (it.status !== undefined && it.status !== null) v.st = it.status;
+                    if (it.stime || it.start_time) v.stime = it.stime || it.start_time;
+                    if (it.etime || it.end_time) v.etime = it.etime || it.end_time;
+                    out.push(v);
                 });
                 if (!out.length) { cb(null); return; }
-                tpLineCache.set(ck, out);
-                cb(out);
+                var f = tpFilterLineVariants(cityKey, q, out, gap, true);
+                noteRejected(f);
+                // 全被拒时不写空缓存：弱证据可能误判「只是缺时刻数据」的真实线路
+                if (!f.list.length) { cb(null); return; }
+                tpLineCache.set(ck, f.list);
+                cb(f.list);
             }
         });
     }
@@ -3616,7 +3655,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
      * （`addLineTo`），换乘站天然与已加载线路接通，清空重跑就能延伸过去。
      * 上限不能只看已加载的最大编号——首遍只到 14 号线时 15/18 号永远补不到，所以没有
      * 城市级上限缓存时向外多探几个编号，探到哪儿缓存下来（见 tpMetroMax）。 */
-    var gapDone = false, gapTried = [], gapLoaded = [];
+    var gapDone = false, gapTried = [], gapLoaded = [], gapSkipped = [];
     function metroMaxCached() {
         var e = tpMetroMax[cityKey];
         if (e && e.n > 0 && Date.now() - (e.t || 0) < TP_METRO_MAX_TTL) return e.n;
@@ -3640,7 +3679,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         var scanMax = cachedMax > 0 ? Math.max(cachedMax, maxN) : (maxN + 6);
         var out = [];
         for (var i = 1; i <= scanMax && out.length < TP_MAX_METRO_GAPS; i++) {
-            if (!seen[i]) out.push(prefix + i + '号线');
+            if (seen[i]) continue;
+            var q = prefix + i + '号线';
+            // 同一会话内已确认在建/规划（或盲查无首末班）的编号不再重复补查
+            if (tpUcBlocked(cityKey, q, true)) { gapSkipped.push(q); continue; }
+            out.push(q);
         }
         return out;
     }
@@ -3682,7 +3725,7 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
                     queryState[q] = 'failed';
                 }
                 next();
-            });
+            }, { gap: true });
         }
         next();
     }
@@ -6080,6 +6123,73 @@ function looksLikeLineName(s) {
     if (/[市区县镇街道号]$/.test(s)) return false;
     if (/在建|规划|拟建|暂缓/.test(s)) return false;   // 站点 address 里会混入「(在建)19号线」
     return /路|线/.test(s);
+}
+
+/* ---------- 在建/规划线路过滤 ----------
+ * 高德 LineSearch 对在建线路也可能返回站序（上海 20 号线车站 POI 的 address 直接
+ * 写作「(在建)20号线一期东段」）。不拦的话，编号缺口补查会把 20 号线当成可乘坐
+ * 地铁建进线网，凭空造出一条快速通道，等时圈会明显偏大。
+ *
+ * 证据分两档，都只存在内存里，刷新页面即清空：
+ *   strong —— 名称/类型含在建标记、status 非运营、站点 POI 地址明确写「(在建)…号线」；
+ *             对所有线路加载路径生效。
+ *   weak   —— 编号缺口盲查的新响应完全没有首末班时间；只拦同一会话里的盲查，
+ *             不拦站点地址/导航证据加载，也不写空缓存，避免把「只是缺时刻数据」的
+ *             真实线路在 30 天缓存期内永久拉黑。 */
+var tpUcState = { strong: {}, weak: {} };
+function tpUcKey(name) {
+    var nm = tpLineNorm(name);
+    var m = /(\d+)号线/.exec(nm);
+    return m ? ('n:' + m[1]) : nm;   // 20号线东延伸 / 地铁20号线 → n:20
+}
+function tpUcBlocked(cityKey, name, includeWeak) {
+    if (!cityKey || !name) return false;
+    var k = cityKey + '|' + tpUcKey(name);
+    return !!(tpUcState.strong[k] || (includeWeak && tpUcState.weak[k]));
+}
+function tpUcMark(kind, cityKey, name) {
+    if (!cityKey || !name || !tpUcState[kind]) return;
+    tpUcState[kind][cityKey + '|' + tpUcKey(name)] = 1;
+}
+/* gap=true 表示「编号缺口盲查」：额外要求线路名匹配请求编号，且仅对新响应要求
+ * 有首末班时间；站点地址/导航证据加载不套这些规则。 */
+function tpFilterLineVariants(cityKey, q, variants, gap, fresh) {
+    var out = [], rejected = [];
+    var qm = /(\d+)号线/.exec(q || '');
+    (variants || []).forEach(function (it) {
+        var nm = String((it && it.n) || q || '');
+        var label = nm + String((it && it.t) || '');
+
+        // 强证据 1：名称/类型含在建/规划等标记
+        if (/在建|规划|拟建|暂缓|未开通|施工中/.test(label)) {
+            tpUcMark('strong', cityKey, nm); rejected.push(nm); return;
+        }
+        // 强证据 2：高德线路状态字段（若返回）非「正常」
+        var st = (it && it.st !== undefined) ? String(it.st)
+            : ((it && it.status !== undefined) ? String(it.status) : '');
+        if (st && st !== '1') {
+            tpUcMark('strong', cityKey, nm); rejected.push(nm); return;
+        }
+        // 强证据 3：站点 POI 地址已标记该线在建（见 absorbPois）
+        if (tpUcBlocked(cityKey, nm, gap)) { rejected.push(nm); return; }
+
+        // 盲查必须真的是请求的那条轨道线，避免「20路」之类模糊命中
+        if (gap && qm) {
+            var hitNum = new RegExp('(^|\\D)' + qm[1] + '号线').test(nm);
+            if (!hitNum || !tpRailName(nm, it && it.t)) { rejected.push(nm); return; }
+        }
+
+        // 弱证据：盲查的新响应完全没有首末班时间（在建线路通常如此）。
+        // 只对新响应生效；旧缓存没有这些字段，不能据此误杀真实线路。
+        var stime = String((it && (it.stime || it.start_time)) || '').trim();
+        var etime = String((it && (it.etime || it.end_time)) || '').trim();
+        var hasTime = /^\d{1,2}:\d{2}/.test(stime) || /^\d{1,2}:\d{2}/.test(etime);
+        if (gap && fresh && !hasTime) {
+            tpUcMark('weak', cityKey, nm); rejected.push(nm); return;
+        }
+        out.push(it);
+    });
+    return { list: out, rejected: rejected };
 }
 
 function splitStationLines(addr) {
