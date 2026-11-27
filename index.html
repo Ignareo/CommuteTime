@@ -1027,10 +1027,10 @@ var TP_SPEED_VER = 4;                                     // 1=含候车, 2=固�
  * SUBWAY=[25,120] 一套范围：磁浮约 200km/h 会被上限拒绝后退回 35，轻轨 20~25km/h
  * 会被下限拒绝后反而退回更快的 35，两种都直接扭曲等时圈。 */
 var TP_SPEED_SPEC = {
-    SUBWAY:    { range: [25, 120], raw: [12.5, 180], prior: 35,  wait: 150, waitMax: 420, learnMin: 3000 },
-    MAGLEV:    { range: [80, 300], raw: [40, 450],   prior: 180, wait: 420, waitMax: 900, learnMin: 3000 },
-    LIGHTRAIL: { range: [15, 40],  raw: [7.5, 60],   prior: 25,  wait: 180, waitMax: 480, learnMin: 2000 },
-    BUS:       { range: [4, 30],   raw: [2, 45],     prior: 12,  wait: 240, waitMax: 480, learnMin: 3000 }
+    SUBWAY:    { range: [25, 120], raw: [12.5, 180], prior: 35,  wait: 150, waitMin: 60,  waitMax: 420, learnMin: 3000 },
+    MAGLEV:    { range: [80, 300], raw: [40, 450],   prior: 180, wait: 420, waitMin: 120, waitMax: 900, learnMin: 3000 },
+    LIGHTRAIL: { range: [15, 40],  raw: [7.5, 60],   prior: 25,  wait: 180, waitMin: 60,  waitMax: 480, learnMin: 2000 },
+    BUS:       { range: [4, 30],   raw: [2, 45],     prior: 12,  wait: 240, waitMin: 90,  waitMax: 480, learnMin: 3000 }
 };
 var TP_SPEED_FIT_STABILITY = 1.35;                        // 留一斜率相对中位数的最大偏离；超过视为回归不稳
 var TP_SPEED_SAMPLES_MAX = 16;                            // 每条线路保留的原始样本数上限
@@ -1335,19 +1335,24 @@ function tpSpeedFit(samples) {
 }
 /* 候车：优先使用当前出发时段桶的截距；同桶样本不足 3 个时退回全线中位数。
  * 上限按制式设置（磁浮/低班次市域线可比普通地铁大得多），超限夹到上限而不是
- * 突然退回 150 秒——后者会让低班次线路在临界处少算好几分钟。 */
+ * 突然退回 150 秒——后者会让低班次线路在临界处少算好几分钟。
+ * learned 只在「候车确实由回归截距得出」时为真：负截距或低于该制式最小发车间隔
+ * 说明这段样本解释不了候车，退回制式先验后必须让偏差系数继续保守化，不能冒充已校准；
+ * 超上限只截断，仍算已校准。 */
 function tpSpeedWaitFor(samples, fit, bucket, spec) {
-    if (fit) {
-        var local = [];
-        for (var i = 0; i < samples.length; i++) {
-            if (bucket && samples[i][2] !== bucket) continue;
-            local.push(samples[i][1] - fit.slope * samples[i][0]);
-        }
-        var wait = local.length >= 3 ? tpMedian(local) : fit.wait;
-        if (!(wait >= 0)) return spec.wait;
-        return Math.min(wait, spec.waitMax);
+    if (!fit) return { wait: spec.wait, learned: false };
+    var local = [];
+    for (var i = 0; i < samples.length; i++) {
+        if (bucket && samples[i][2] !== bucket) continue;
+        local.push(samples[i][1] - fit.slope * samples[i][0]);
     }
-    return spec.wait;
+    var wait = local.length >= 3 ? tpMedian(local) : fit.wait;
+    /* 候车小到不合常理（低于该制式最小发车间隔）通常说明样本时间不含候车，
+     * 此时不能用 0~20 秒冒充已校准，退回制式先验并让偏差系数保守化。 */
+    if (!(wait >= (spec.waitMin || 0))) return { wait: spec.wait, learned: false };
+    // 超上限只截到上限、仍算已校准：再乘一遍偏差系数会把低班次线路罚成 12 分钟候车
+    if (wait > spec.waitMax) return { wait: spec.waitMax, learned: true };
+    return { wait: wait, learned: true };
 }
 /* 从一条速度表记录算出可用信息。速度表与城市级先验共用，避免两套拟合逻辑漂移。 */
 function tpSpeedInfoFromEntry(e, cls, bucket) {
@@ -1356,10 +1361,24 @@ function tpSpeedInfoFromEntry(e, cls, bucket) {
     var samples = e.s;
     var spec = TP_SPEED_SPEC[cls] || TP_SPEED_SPEC.SUBWAY;
     var fit = tpSpeedFit(samples);
-    var speed, wait, source = fit ? 'fit' : 'median';
+    var speed, wait = spec.wait, waitLearned = false, source = 'median';
     if (fit) {
-        speed = 3.6 / fit.slope;
-        wait = tpSpeedWaitFor(samples, fit, bucket, spec);
+        var useFit = fit;
+        /* 公交受路况影响远大于地铁：当前时段样本足够时用同桶回归同时重估速度与候车，
+         * 否则早高峰会套用平峰/夜间学到的高速度。地铁旅速全天稳定，不按桶拆。 */
+        if (cls === 'BUS' && bucket) {
+            var local = [];
+            for (var b = 0; b < samples.length; b++) {
+                if (samples[b][2] === bucket) local.push(samples[b]);
+            }
+            var lf = local.length >= 4 ? tpSpeedFit(local) : null;
+            if (lf) useFit = lf;
+        }
+        speed = 3.6 / useFit.slope;
+        var wi = tpSpeedWaitFor(samples, useFit, bucket, spec);
+        wait = wi.wait;
+        waitLearned = wi.learned;
+        source = 'fit';
     } else {
         var implied = [];
         for (var i = 0; i < samples.length; i++) {
@@ -1367,14 +1386,13 @@ function tpSpeedInfoFromEntry(e, cls, bucket) {
             if (eff > 30) implied.push(samples[i][0] / eff * 3.6);
         }
         speed = tpMedian(implied);
-        wait = spec.wait;
     }
     var bucketN = 0;
     for (var j = 0; j < samples.length; j++) if (samples[j][2] === bucket) bucketN++;
     if (!isFinite(speed) || speed < spec.range[0] || speed > spec.range[1]) return null;
     return {
         speed: speed, wait: wait, cls: cls, n: samples.length, bucketN: bucketN,
-        source: source, waitLearned: !!fit
+        source: source, waitLearned: waitLearned
     };
 }
 function tpLineSpeedInfo(cityKey, mode, name, bucket, type) {
@@ -2469,14 +2487,11 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     }
 
     /* 查一条已加载线路的逐线速度与候车。LineSearch 没有 transit_mode，只能靠名字
-     * 判方式；为兼容学习侧可能判成另一种 mode 的历史样本，两个 mode 键都试。
-     * 速度制式由线路名决定（磁浮/轻轨/普通地铁），因此跨 mode 查询不会把公交与地铁混用。 */
+     * 判方式；速度表键只含「城市|速度制式|线路」，mode 只影响制式判定。不要跨 mode
+     * 回退：公交段一旦被导航误标成 SUBWAY，就会借用地铁速度（35~100km/h）把公交圈画大。 */
     function routeSpeedInfo(mode, lineName, queryName, lineType) {
-        var alt = mode === 'SUBWAY' ? 'BUS' : 'SUBWAY';
         return tpLineSpeedInfo(cityKey, mode, lineName, departBucket, lineType)
-            || tpLineSpeedInfo(cityKey, mode, queryName, departBucket, lineType)
-            || tpLineSpeedInfo(cityKey, alt, lineName, departBucket, lineType)
-            || tpLineSpeedInfo(cityKey, alt, queryName, departBucket, lineType);
+            || tpLineSpeedInfo(cityKey, mode, queryName, departBucket, lineType);
     }
 
     /* 把 LineSearch 结果转成可松弛的有向线路：站序 + 区间累计用时。
@@ -3351,9 +3366,10 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         } else if (navCalls > 0) {
             navBias = TP_NAV_BIAS_DEFAULT;
         }
-        // 单类样本至少 8 个才独立取分位，否则沿用全局值
+        /* 地铁样本 ≥8 才独立取分位；公交误差更大且方向单一（模型偏快），
+         * 5 个样本就比沿用「地铁主导」的全局值可靠，否则 5~7 个已复核公交站的信息被浪费。 */
         navBiasByKind.metro = byKind.metro.length >= 8 ? tpClampBias(tpBiasQuantile(byKind.metro, 0.6)) : navBias;
-        navBiasByKind.bus = byKind.bus.length >= 8 ? tpClampBias(tpBiasQuantile(byKind.bus, 0.6)) : navBias;
+        navBiasByKind.bus = byKind.bus.length >= 5 ? tpClampBias(tpBiasQuantile(byKind.bus, 0.6)) : navBias;
         navBiasStats = {
             n: all.length, p50: tpBiasPct(all, 0.5), p60: tpBiasPct(all, 0.6),
             p75: tpBiasPct(all, 0.75), p90: tpBiasPct(all, 0.9),
@@ -4689,6 +4705,7 @@ function tpAlgoSig() {
     if (_tpAlgoSig !== null) return _tpAlgoSig;
     var src = String(buildTransitPreciseRing) + '|' + String(tpMakeHeap) + '|' +
         String(tpSpeedFit) + '|' + String(tpSpeedWaitFor) + '|' + String(tpLineSpeedInfo) + '|' +
+        String(tpSpeedInfoFromEntry) + '|' +
         String(tpRailName) + '|' + String(tpSpeedClass) + '|' + JSON.stringify(TP_NAMED_LINES) + '|' +
         JSON.stringify(TP_SPEED_SPEC) + '|' + TP_SPEED_VER + '|' +
         TP_NAV_CAP_MAX + '|' + TP_NAV_REFINE_CAP + '|' + TP_NAV_CAL_MAX + '|' +
