@@ -3740,9 +3740,9 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
         if (!prefix || !maxN) return { list: [], probed: 0, truncated: false };
         var cached = metroMaxCached();
         var raw = tpMetroMax[cityKey];
-        // 旧缓存没有版本号：保留它记的「已加载最大编号」当起点再向外探，避免高编号线丢线索
-        var legacyN = raw && !(raw.v >= 2) && raw.n > 0 ? raw.n : 0;
-        var scanMax = cached ? Math.max(cached.n, maxN) : (Math.max(maxN, legacyN) + 6);
+        // 旧/过期缓存也保留它记的已探测编号，从该前沿继续向外探，避免高编号线丢线索
+        var rawN = raw && raw.n > 0 ? raw.n : 0;
+        var scanMax = cached ? Math.max(cached.n, maxN) : (Math.max(maxN, rawN) + 6);
         // 上一轮被缺口上限截断：从缓存前沿继续向外探，否则 18 号线这类高编号永远轮不到
         if (cached && cached.more) scanMax = Math.max(scanMax, cached.n + 6);
         var none = (cached && cached.none) || {};
@@ -3769,7 +3769,8 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
     }
     /* 把「已探测到的最大编号」记到城市缓存：之后各圈只补到这儿，不再盲试更大的不存在的线。
      * probed 是本轮完整枚举到的最大编号（被缺口上限截断时只到最后一个实际查过的号）；
-     * 不能再拿「已加载最大编号」当上限——某条线一次失败就会把自己永久钉在缓存之外。 */
+     * 不能再拿「已加载最大编号」当上限——某条线一次失败就会把自己永久钉在缓存之外。
+     * 只有前沿真的增长时才刷新 t；否则每次建圈都续期会让 30 天 TTL 永不到期，新开的线永远发现不了。 */
     function noteMetroMax(probed, truncated) {
         var top = 0;
         Object.keys(routes).forEach(function (q) {
@@ -3777,11 +3778,12 @@ function buildTransitPreciseRing(comp, mode, minutes, onProgress, onDone, ctrl) 
             if (m) top = Math.max(top, parseInt(m[2], 10) || 0);
         });
         var e = metroMaxEntry();
-        if (top > e.n) e.n = top;
-        if (probed > e.n) e.n = probed;
+        var grew = false;
+        if (top > e.n) { e.n = top; grew = true; }
+        if (probed > e.n) { e.n = probed; grew = true; }
         if (!(e.n > 0)) return;
         e.more = !!truncated;
-        e.t = Date.now();
+        if (grew || !e.t) e.t = Date.now();
         saveJson(TP_METRO_MAX_KEY, tpMetroMax);
     }
     function namedLineQueries() {
